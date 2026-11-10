@@ -1,5 +1,7 @@
 # ZUNPY Lead Management Automation
 
+![ZUNPY Banner](docs/images/zunpy-lead-management-banner.png)
+
 **Project status:** Planned  
 **Version:** 1.1  
 **Category:** Business Process Automation
