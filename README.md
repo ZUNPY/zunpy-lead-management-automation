@@ -2,17 +2,18 @@
 
 ![ZUNPY Banner](docs/images/zunpy-lead-management-banner.png)
 
-**Project status:** Planned  
-**Version:** 1.1  
-**Category:** Business Process Automation
+**Project status:** Verified demo / working prototype  
+**Version:** Demo v1  
+**Category:** Business Process Automation  
+**Business contact:** hello@zunpyai.com
 
 ## 1. Project Overview
 
-ZUNPY Lead Management Automation is a workflow-based solution designed to help small businesses and independent professionals capture, organize, and follow up with potential customers.
+ZUNPY Lead Management Automation is a workflow-based solution designed to help small service businesses capture, validate, organize and follow up with potential customers.
 
-The system automates repetitive lead management tasks, reduces manual data entry, prevents duplicate records, and helps businesses respond to new enquiries in a timely manner.
+The system reduces repetitive lead-management work, centralizes lead data, prevents duplicate records, logs activity and helps ensure follow-up actions are not forgotten.
 
-It supports both automated lead capture and manual contact registration.
+The current demo has been tested end to end in a controlled sandbox environment using fictional lead data.
 
 ## 2. Problem Statement
 
@@ -24,80 +25,112 @@ This can result in:
 - Duplicate customer records.
 - Delayed responses.
 - Inconsistent follow-up.
-- Poor visibility into the sales pipeline.
+- Poor visibility into lead activity.
 
-## 3. Proposed Solution
+## 3. Verified Demo Flow
 
-The proposed solution uses n8n to orchestrate an automated lead management workflow.
+The current ZUNPY demo uses n8n to orchestrate five workflow stages:
 
-It will:
+1. **Lead Intake** — accepts manual, form, webhook or API lead input.
+2. **Lead Validation** — validates and normalizes required contact data.
+3. **CRM Operations** — creates or updates leads in Google Sheets and detects duplicate matches.
+4. **Email Notifications** — sends controlled Gmail notifications and records the activity.
+5. **Follow-up Scheduler** — detects due follow-ups, triggers the notification workflow and marks the follow-up as notified.
 
-1. Capture incoming leads through a web form or webhook.
-2. Allow users to register contacts manually.
-3. Validate submitted information.
-4. Detect existing contacts and prevent duplicate records.
-5. Store lead information in a centralized Google Sheets CRM.
-6. Send an automated acknowledgement email when appropriate.
-7. Notify the business owner about new enquiries.
-8. Track lead status and pending follow-up actions.
-9. Provide basic activity reporting.
+```text
+Lead Intake
+    ↓
+Validation
+    ↓
+CRM Operations
+    ↓
+Email Notifications
+    ↑
+Follow-up Scheduler
+```
 
-## 4. Target Users
+## 4. Verified Capabilities
 
-- Small businesses.
+- Lead intake through multiple supported channels.
+- Required-field and contact-data validation.
+- Google Sheets CRM integration.
+- Duplicate detection and controlled create/update logic.
+- Activity logging.
+- Real Gmail API notification delivery.
+- Follow-up scheduling and notification state tracking.
+- Controlled sandbox testing with fictional data.
+- SPF, DKIM and DMARC passing on the tested ZUNPY business-email delivery path.
+
+## 5. Target Users
+
+- Small service businesses.
 - Freelancers and consultants.
 - Independent service providers.
-- Small sales and marketing teams.
+- Small sales and operations teams.
 
-## 5. Technology Stack
+## 6. Technology Stack
 
 | Technology | Purpose |
 |---|---|
 | n8n | Workflow orchestration |
-| Google Sheets | Lead database and CRM |
-| Gmail | Automated email communication |
+| Google Sheets | Lead database and lightweight CRM |
+| Gmail API | Automated email notifications |
 | Webhooks / REST APIs | Automated data intake |
-| Python | Optional custom validation and processing |
+| JavaScript / n8n Code nodes | Validation and workflow logic |
 | GitHub | Version control and project documentation |
 
-## 6. Project Objectives
+## 7. Demo Scope
 
-- Reduce repetitive administrative work.
-- Improve lead data quality.
-- Minimize duplicate records.
-- Improve response times.
-- Centralize contact information.
-- Support both manual and automated lead registration.
-- Provide a simple and affordable lead management process.
-- Create a reusable automation solution.
+The verified demo focuses on a reusable lead-management workflow using standard integrations.
 
-## 7. Project Scope
+It includes:
 
-The initial version will focus on a single, reproducible workflow using standard integrations.
-
-It will include:
-
-- Web form and webhook lead capture.
-- Manual lead registration.
-- Data validation and duplicate prevention.
+- Lead intake.
+- Data validation and normalization.
+- Duplicate prevention.
 - Centralized lead storage.
-- Email acknowledgements and notifications.
-- Basic lead status tracking.
-- Simple activity reporting.
+- Activity logging.
+- Email notifications.
+- Follow-up scheduling.
 
-A full CRM platform, advanced analytics, paid third-party services, and complex multi-channel campaigns are outside the initial scope.
+A full custom CRM, large-scale outbound campaigns, advanced analytics, WhatsApp integration, guaranteed conversion results and client-specific production hardening are outside the current demo scope.
 
-## 8. Expected Deliverables
+## 8. Testing and Verification
 
-- Documented automation architecture.
-- Exportable n8n workflow.
-- Configurable Google Sheets CRM template.
-- Manual and automated lead registration.
-- Email notification and acknowledgement automation.
-- Test cases and execution evidence.
-- Installation and configuration instructions.
-- GitHub repository with reproducible setup documentation.
+The workflow has been tested end to end with fictional lead data in the ZUNPY sandbox.
 
-## 9. Important Note
+Verified evidence includes:
 
-This document describes the planned solution. Currently, the project is in the documentation and planning phase; implementation and testing have not yet been completed. Features will only be marked as implemented and verified after successful testing. Detailed installation, configuration, and usage instructions will be added as the implementation progresses.
+- Successful lead intake and validation.
+- Successful CRM record creation.
+- Successful activity logging.
+- Successful real Gmail API notification delivery from the ZUNPY business domain.
+- Successful follow-up detection and notification.
+- Follow-up state updated to prevent repeated notifications.
+- Business-domain email authentication passing SPF, DKIM and DMARC checks on the controlled test.
+
+## 9. Project Status
+
+**Verified demo / working prototype.**
+
+The core workflow has been demonstrated end to end. This repository represents a commercial demonstration and reusable automation foundation, not a claim of universal production readiness.
+
+Client deployment would still require environment-specific configuration, credentials, acceptance testing and any agreed production hardening.
+
+## 10. Security and Privacy
+
+The public demo uses fictional lead information.
+
+Credentials, OAuth secrets, API keys, private customer data and personal information must never be committed to the repository.
+
+## About ZUNPY
+
+ZUNPY builds practical automation solutions using n8n, Python, APIs and AI-assisted workflows.
+
+The focus is on reducing repetitive business work with solutions that are understandable, maintainable and testable.
+
+**Contact:** hello@zunpyai.com
+
+---
+
+*Built and verified as a practical automation project by ZUNPY.*
