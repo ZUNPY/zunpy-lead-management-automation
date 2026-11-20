@@ -55,6 +55,8 @@ Follow-up Scheduler
 
 ### 3.2 Quote Follow-up V1
 
+![Quote Follow-up V1 — E2E Verified Sandbox](docs/images/quote-followup-v1.webp)
+
 Demo v2 adds a second verified workflow chain for commercial quote follow-up:
 
 1. **Quote Registration** — validates and registers a quote and blocks duplicate quote IDs.
