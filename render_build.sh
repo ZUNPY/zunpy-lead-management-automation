@@ -38,7 +38,20 @@ cp render_ocr.py ./app/services/ocr.py
 python -m pip install -r requirements.txt
 python -m pip install "rapidocr==3.10.0" "onnxruntime==1.32.0" "pypdfium2==5.15.2"
 python -m compileall -q app
-rapidocr check
+python - <<'PY'
+from PIL import Image, ImageDraw, ImageFont
+from app.services.ocr import _engine
+
+image = Image.new("RGB", (640, 160), "white")
+draw = ImageDraw.Draw(image)
+font = ImageFont.load_default()
+draw.text((24, 50), "Supplier: ZUNPY TEST 123", fill="black", font=font)
+result = _engine()(image, use_cls=False)
+texts = list(getattr(result, "txts", []) or [])
+if not texts:
+    raise SystemExit("ocr_runtime_check_failed")
+print("ocr_runtime_check_ok", texts[:3])
+PY
 
 python - <<'PY'
 import fastapi
