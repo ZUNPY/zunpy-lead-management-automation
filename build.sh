@@ -19,10 +19,8 @@ cat \
 
 python -m zipfile -e /tmp/zunpy-jobs-api-v0.5.zip .
 python -m pip install -r requirements.txt
+python -m pip install "alembic>=1.13,<2"
 
-cat > start.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-python -c "from alembic.config import main; main(argv=['upgrade','head'])"
-exec python -m uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-10000}"
-EOF
+ALEMBIC_BIN="$(dirname "$(command -v python)")/alembic"
+test -x "$ALEMBIC_BIN"
+"$ALEMBIC_BIN" --version
