@@ -33,8 +33,10 @@ cp "$SRC_DIR/alembic.ini" ./alembic.ini
 cp "$SRC_DIR/requirements.txt" ./requirements.txt
 cp render_internal.py ./app/api/routes/internal.py
 cp render_processing.py ./app/services/processing.py
+cp render_ocr.py ./app/services/ocr.py
 
 python -m pip install -r requirements.txt
+python -m pip install "rapidocr==3.10.0" "onnxruntime==1.32.0" "pypdfium2==5.15.2"
 
 python - <<'PY'
 import fastapi
@@ -42,9 +44,14 @@ import sqlalchemy
 import psycopg
 import boto3
 import pypdf
+import pypdfium2
+import rapidocr
+import onnxruntime
 import uvicorn
 
 print("runtime_dependencies_ok")
 print("sqlalchemy", sqlalchemy.__version__)
 print("psycopg", psycopg.__version__)
+print("rapidocr", rapidocr.__version__ if hasattr(rapidocr, "__version__") else "ok")
+print("onnxruntime", onnxruntime.__version__)
 PY
