@@ -21,6 +21,12 @@ from app.security.auth import require_internal_service
 from app.security.tokens import issue_order_token, verify_token
 from app.services.files import create_upload_ticket, finalize_upload, submit_order
 from app.services.orders import create_order, transition_order
+from app.services.results import (
+    ResultDataError,
+    ResultExpiredError,
+    ResultNotReadyError,
+    result_download_payload,
+)
 from app.services.processing import (
     InvalidProcessingStateError,
     ProcessingInfrastructureError,
@@ -229,7 +235,19 @@ def start_order(
     except StorageConfigurationError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     try:
-        return process_order(db, order_id=order_id, storage=storage)
+        result = process_order(db, order_id=order_id, storage=storage)
+        if result.get("order_status") == "COMPLETED":
+            result["result_csv"] = result_download_payload(
+                db,
+                order_id=order_id,
+                storage=storage,
+            )
+        return result
+    except (ResultNotReadyError, ResultExpiredError, ResultDataError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Result CSV generation failed: {exc}",
+        ) from exc
     except ProcessingOrderNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.") from exc
     except InvalidProcessingStateError as exc:
@@ -248,9 +266,10 @@ def review_order(
     order_id: str,
     payload: ReviewResolutionPayload,
     db: Session = Depends(get_db),
+    storage: R2Storage = Depends(get_storage),
 ) -> dict[str, object]:
     try:
-        return resolve_invoice_review(
+        result = resolve_invoice_review(
             db,
             order_id=order_id,
             invoice_result_id=payload.invoice_result_id,
@@ -263,6 +282,18 @@ def review_order(
             total_cents=payload.total_cents,
             reviewer_note=payload.reviewer_note,
         )
+        if result.get("order_status") == "COMPLETED":
+            result["result_csv"] = result_download_payload(
+                db,
+                order_id=order_id,
+                storage=storage,
+            )
+        return result
+    except (ResultNotReadyError, ResultExpiredError, ResultDataError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Result CSV generation failed: {exc}",
+        ) from exc
     except ProcessingOrderNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.") from exc
     except ReviewInvoiceNotFoundError as exc:
