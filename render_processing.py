@@ -8,6 +8,8 @@ cannot be resolved deterministically are routed to REVIEW.
 from __future__ import annotations
 
 import re
+import unicodedata
+from difflib import SequenceMatcher
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -57,7 +59,23 @@ _NUMBER_TOKEN_RE = re.compile(r"[-+]?\d[\d\s.,']*")
 
 
 def _normalize_label(value: str) -> str:
-    return re.sub(r"\s+", " ", value.strip().lower())
+    value = unicodedata.normalize("NFKD", value)
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    value = value.lower().replace("|", "l")
+    value = re.sub(r"[^a-z0-9# ]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _label_matches(candidate: str, expected: str) -> bool:
+    candidate_n = _normalize_label(candidate)
+    expected_n = _normalize_label(expected)
+    if candidate_n == expected_n:
+        return True
+    if not candidate_n or not expected_n:
+        return False
+    if abs(len(candidate_n) - len(expected_n)) > max(4, int(len(expected_n) * 0.35)):
+        return False
+    return SequenceMatcher(None, candidate_n, expected_n).ratio() >= 0.78
 
 
 def _lines(text: str) -> list[str]:
@@ -66,6 +84,8 @@ def _lines(text: str) -> list[str]:
 
 def _labeled_value(lines: list[str], labels: tuple[str, ...]) -> str | None:
     normalized = tuple(_normalize_label(label) for label in labels)
+
+    # Exact pass first: deterministic behavior remains unchanged for clean PDFs.
     for line in lines:
         match = _LABEL_VALUE_RE.match(line)
         if match and _normalize_label(match.group(1)) in normalized:
@@ -78,6 +98,30 @@ def _labeled_value(lines: list[str], labels: tuple[str, ...]) -> str | None:
                 value = line[len(label) :].strip(" -#:\t")
                 if value:
                     return value
+
+    # OCR-tolerant pass. Only the label prefix is fuzzy; values are never
+    # corrected or invented. This handles small OCR substitutions such as
+    # Invoice/Involce or Supplier/Suppller while remaining fail-closed.
+    for line in lines:
+        match = _LABEL_VALUE_RE.match(line)
+        if match:
+            candidate = match.group(1)
+            for label in labels:
+                if _label_matches(candidate, label):
+                    value = match.group(2).strip()
+                    return value or None
+
+        words = line.split()
+        for label in labels:
+            label_words = label.split()
+            if not label_words or len(words) <= len(label_words):
+                continue
+            candidate = " ".join(words[: len(label_words)])
+            if _label_matches(candidate, label):
+                value = " ".join(words[len(label_words) :]).strip(" -#:\t")
+                if value:
+                    return value
+
     return None
 
 
@@ -466,6 +510,7 @@ def process_order(db: Session, *, order_id: str, storage: R2Storage) -> dict[str
                 "invoice_result_id": invoice.invoice_result_id,
                 "status": invoice.status.value,
                 "review_reason": invoice.review_reason.value if invoice.review_reason else None,
+                "review_notes": invoice.review_notes,
                 "supplier": invoice.supplier,
                 "invoice_number": invoice.invoice_number,
                 "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
@@ -635,6 +680,7 @@ def resolve_invoice_review(
             "invoice_result_id": invoice.invoice_result_id,
             "status": invoice.status.value,
             "review_reason": invoice.review_reason.value if invoice.review_reason else None,
+            "review_notes": invoice.review_notes,
             "supplier": invoice.supplier,
             "invoice_number": invoice.invoice_number,
             "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
