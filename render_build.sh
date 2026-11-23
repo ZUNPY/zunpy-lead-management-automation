@@ -34,6 +34,8 @@ cp "$SRC_DIR/requirements.txt" ./requirements.txt
 cp render_internal.py ./app/api/routes/internal.py
 cp render_processing.py ./app/services/processing.py
 cp render_ocr.py ./app/services/ocr.py
+cp render_results.py ./app/services/results.py
+cp render_orders.py ./app/api/routes/orders.py
 
 python -m pip install -r requirements.txt
 python -m pip install "rapidocr==3.10.0" "onnxruntime==1.32.0" "pypdfium2==5.15.2"
