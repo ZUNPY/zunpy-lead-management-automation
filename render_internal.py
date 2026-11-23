@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from base64 import b64decode
 from io import BytesIO
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -10,14 +11,20 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
-from app.models import OrderStatus
+from app.models import Order, OrderStatus
 from app.schemas.file import UploadRequest
 from app.schemas.order import OrderCreateInternal
 from app.security.auth import require_internal_service
 from app.security.tokens import issue_order_token, verify_token
 from app.services.files import create_upload_ticket, finalize_upload, submit_order
 from app.services.orders import create_order, transition_order
-from app.services.storage import R2Storage, get_storage
+from app.services.processing import (
+    InvalidProcessingStateError,
+    ProcessingInfrastructureError,
+    ProcessingOrderNotFoundError,
+    process_order,
+)
+from app.services.storage import R2Storage, StorageConfigurationError, get_storage
 
 router = APIRouter(
     prefix="/internal",
@@ -31,12 +38,10 @@ def not_implemented(detail: str) -> None:
 
 
 def _smoke_pdf() -> bytes:
-    buffer = BytesIO()
-    writer = PdfWriter()
-    writer.add_blank_page(width=612, height=792)
-    writer.add_metadata({"/Title": "ZUNPY JOB-001 production smoke test"})
-    writer.write(buffer)
-    return buffer.getvalue()
+    # Pre-generated synthetic one-page digital invoice. No customer data.
+    return b64decode(
+        "JVBERi0xLjMKJZOMi54gUmVwb3J0TGFiIEdlbmVyYXRlZCBQREYgZG9jdW1lbnQgKG9wZW5zb3VyY2UpCjEgMCBvYmoKPDwKL0YxIDIgMCBSCj4+CmVuZG9iagoyIDAgb2JqCjw8Ci9CYXNlRm9udCAvSGVsdmV0aWNhIC9FbmNvZGluZyAvV2luQW5zaUVuY29kaW5nIC9OYW1lIC9GMSAvU3VidHlwZSAvVHlwZTEgL1R5cGUgL0ZvbnQKPj4KZW5kb2JqCjMgMCBvYmoKPDwKL0NvbnRlbnRzIDcgMCBSIC9NZWRpYUJveCBbIDAgMCA1OTUuMjc1NiA4NDEuODg5OCBdIC9QYXJlbnQgNiAwIFIgL1Jlc291cmNlcyA8PAovRm9udCAxIDAgUiAvUHJvY1NldCBbIC9QREYgL1RleHQgL0ltYWdlQiAvSW1hZ2VDIC9JbWFnZUkgXQo+PiAvUm90YXRlIDAgL1RyYW5zIDw8Cgo+PiAKICAvVHlwZSAvUGFnZQo+PgplbmRvYmoKNCAwIG9iago8PAovUGFnZU1vZGUgL1VzZU5vbmUgL1BhZ2VzIDYgMCBSIC9UeXBlIC9DYXRhbG9nCj4+CmVuZG9iago1IDAgb2JqCjw8Ci9BdXRob3IgKGFub255bW91cykgL0NyZWF0aW9uRGF0ZSAoRDoyMDI2MTEyMzE5MDUzMyswMCcwMCcpIC9DcmVhdG9yIChhbm9ueW1vdXMpIC9LZXl3b3JkcyAoKSAvTW9kRGF0ZSAoRDoyMDI2MTEyMzE5MDUzMyswMCcwMCcpIC9Qcm9kdWNlciAoUmVwb3J0TGFiIFBERiBMaWJyYXJ5IC0gXChvcGVuc291cmNlXCkpIAogIC9TdWJqZWN0ICh1bnNwZWNpZmllZCkgL1RpdGxlICh1bnRpdGxlZCkgL1RyYXBwZWQgL0ZhbHNlCj4+CmVuZG9iago2IDAgb2JqCjw8Ci9Db3VudCAxIC9LaWRzIFsgMyAwIFIgXSAvVHlwZSAvUGFnZXMKPj4KZW5kb2JqCjcgMCBvYmoKPDwKL0ZpbHRlciBbIC9BU0NJSTg1RGVjb2RlIC9GbGF0ZURlY29kZSBdIC9MZW5ndGggMjcyCj4+CnN0cmVhbQpHYXNKTDYjVj8/JjtCVFBNS2RSSWlsaTBoRTc1I1MtOG9SW21BWkVlZjgqajxaWEE5ND02TkIrYltfM0lwV15sRCM1UjdyKCdbbDViXTNtcWE5K0MxNkhCbHMzViVPclFjOSg1JlohODxiTHA3KXBYWjFuPllKOmU6JFpWSm0laG46WklmO1w/aWtWKkkoP3AmYSYuJSo9JS5JVSRNRF9MLzwiYTE3RD0jPSQ1MWFOTGtrZjprXXBHUjw9NVVrbWpnN2hMbmw3WkQ2PE9SYWdVTUQvVlRhPVc+XmNFUzhEUiIuWGVedT05JjFDMWVSVWA1LyVnXiJAJjB0cV0pREs8VE9cWCZLKEhJWXRKVTB+PmVuZHN0cmVhbQplbmRvYmoKeHJlZgowIDgKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDYxIDAwMDAwIG4gCjAwMDAwMDAwOTIgMDAwMDAgbiAKMDAwMDAwMDE5OSAwMDAwMCBuIAowMDAwMDAwNDAyIDAwMDAwIG4gCjAwMDAwMDA0NzAgMDAwMDAgbiAKMDAwMDAwMDczMSAwMDAwMCBuIAowMDAwMDAwNzkwIDAwMDAwIG4gCnRyYWlsZXIKPDwKL0lEIApbPDczNjNkNjY0OTUwNDY1MWQ4ODhkMzk3MTc3OTVlMzg0Pjw3MzYzZDY2NDk1MDQ2NTFkODg4ZDM5NzE3Nzk1ZTM4ND5dCiUgUmVwb3J0TGFiIGdlbmVyYXRlZCBQREYgZG9jdW1lbnQgLS0gZGlnZXN0IChvcGVuc291cmNlKQoKL0luZm8gNSAwIFIKL1Jvb3QgNCAwIFIKL1NpemUgOAo+PgpzdGFydHhyZWYKMTE1MgolJUVPRgo="
+    )
 
 
 @router.post("/test/job001-smoke", status_code=status.HTTP_201_CREATED)
@@ -45,6 +50,11 @@ def job001_smoke(
     settings: Settings = Depends(get_settings),
     storage: R2Storage = Depends(get_storage),
 ) -> dict[str, object]:
+    """Run one protected real DB + presigned-R2 + validation smoke test.
+
+    This endpoint is intentionally internal-only. It creates a uniquely named
+    synthetic order and one generated one-page PDF. No customer data is used.
+    """
     suffix = uuid4().hex[:12].upper()
     order_id = f"ZJ-TST-{suffix}"
     payment_reference = f"TEST-{uuid4().hex.upper()}"
@@ -144,8 +154,25 @@ def job001_smoke(
 
 
 @router.post("/orders/{order_id}/start")
-def start_order(order_id: str) -> None:
-    not_implemented("Processing start is not implemented yet.")
+def start_order(
+    order_id: str,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    if db.get(Order, order_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+    try:
+        storage = R2Storage(settings)
+    except StorageConfigurationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    try:
+        return process_order(db, order_id=order_id, storage=storage)
+    except ProcessingOrderNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.") from exc
+    except InvalidProcessingStateError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ProcessingInfrastructureError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
 
 @router.post("/orders/{order_id}/invoice-result")
