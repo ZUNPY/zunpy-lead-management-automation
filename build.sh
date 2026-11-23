@@ -18,4 +18,11 @@ cat \
   | base64 -d > /tmp/zunpy-jobs-api-v0.5.zip
 
 python -m zipfile -e /tmp/zunpy-jobs-api-v0.5.zip .
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
+
+cat > start.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+python -m alembic upgrade head
+exec python -m uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-10000}"
+EOF
