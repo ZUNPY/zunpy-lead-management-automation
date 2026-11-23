@@ -37,6 +37,8 @@ cp render_ocr.py ./app/services/ocr.py
 
 python -m pip install -r requirements.txt
 python -m pip install "rapidocr==3.10.0" "onnxruntime==1.32.0" "pypdfium2==5.15.2"
+python -m compileall -q app
+rapidocr check
 
 python - <<'PY'
 import fastapi
