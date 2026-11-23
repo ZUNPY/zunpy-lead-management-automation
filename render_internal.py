@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from base64 import b64decode
+from datetime import date
 from io import BytesIO
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from pypdf import PdfWriter
 from sqlalchemy.orm import Session
 
@@ -22,9 +24,23 @@ from app.services.processing import (
     InvalidProcessingStateError,
     ProcessingInfrastructureError,
     ProcessingOrderNotFoundError,
+    ReviewInvoiceNotFoundError,
     process_order,
+    resolve_invoice_review,
 )
 from app.services.storage import R2Storage, StorageConfigurationError, get_storage
+
+class ReviewResolutionPayload(BaseModel):
+    invoice_result_id: str = Field(min_length=1, max_length=40)
+    supplier: str = Field(min_length=1, max_length=255)
+    invoice_number: str = Field(min_length=1, max_length=128)
+    invoice_date: date
+    currency: str = Field(min_length=3, max_length=3)
+    subtotal_cents: int = Field(ge=0)
+    tax_cents: int = Field(ge=0)
+    total_cents: int = Field(ge=0)
+    reviewer_note: str | None = Field(default=None, max_length=500)
+
 
 router = APIRouter(
     prefix="/internal",
@@ -44,8 +60,17 @@ def _smoke_pdf() -> bytes:
     )
 
 
+def _review_smoke_pdf() -> bytes:
+    output = BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.write(output)
+    return output.getvalue()
+
+
 @router.post("/test/job001-smoke", status_code=status.HTTP_201_CREATED)
 def job001_smoke(
+    review_case: bool = False,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
     storage: R2Storage = Depends(get_storage),
@@ -82,15 +107,16 @@ def job001_smoke(
         order_id=order.order_id,
         new_status=OrderStatus.WAITING_UPLOAD,
         event_type="TEST_ORDER_READY",
-        detail={"kind": "job001-production-smoke"},
+        detail={"kind": "job001-review-smoke" if review_case else "job001-production-smoke"},
     )
 
-    pdf = _smoke_pdf()
+    pdf = _review_smoke_pdf() if review_case else _smoke_pdf()
+    filename = "job001-review-smoke.pdf" if review_case else "job001-production-smoke.pdf"
     item, upload_url = create_upload_ticket(
         db,
         order=order,
         payload=UploadRequest(
-            filename="job001-production-smoke.pdf",
+            filename=filename,
             size_bytes=len(pdf),
             content_type="application/pdf",
         ),
@@ -181,8 +207,31 @@ def invoice_result(order_id: str) -> None:
 
 
 @router.post("/orders/{order_id}/review")
-def review_order(order_id: str) -> None:
-    not_implemented("Review queue integration is not implemented yet.")
+def review_order(
+    order_id: str,
+    payload: ReviewResolutionPayload,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    try:
+        return resolve_invoice_review(
+            db,
+            order_id=order_id,
+            invoice_result_id=payload.invoice_result_id,
+            supplier=payload.supplier,
+            invoice_number=payload.invoice_number,
+            invoice_date=payload.invoice_date,
+            currency=payload.currency,
+            subtotal_cents=payload.subtotal_cents,
+            tax_cents=payload.tax_cents,
+            total_cents=payload.total_cents,
+            reviewer_note=payload.reviewer_note,
+        )
+    except ProcessingOrderNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.") from exc
+    except ReviewInvoiceNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice result not found.") from exc
+    except InvalidProcessingStateError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.post("/orders/{order_id}/complete")
