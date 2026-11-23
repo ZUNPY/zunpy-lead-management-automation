@@ -1,20 +1,23 @@
-"""OCR fallback for image-only JOB-001 PDFs.
+"""Low-memory OCR fallback for image-only JOB-001 PDFs.
 
-RapidOCR is loaded lazily so digital PDFs pay no OCR startup cost.
-PDF pages are rasterized sequentially with PDFium to bound memory usage.
+This configuration is intentionally conservative for Render Free (512 MB):
+PP-OCRv4 mobile models, no orientation classifier, one ONNX thread and
+sequential page rasterization.
 """
 
 from __future__ import annotations
 
+import gc
 from dataclasses import dataclass
 from io import BytesIO
 
 import pypdfium2 as pdfium
-from rapidocr import RapidOCR
+from rapidocr import EngineType, LangDet, LangRec, ModelType, OCRVersion, RapidOCR
 
 
 MIN_LINE_CONFIDENCE = 0.55
 MAX_OCR_PAGES = 10
+OCR_RENDER_SCALE = 1.7
 
 _ENGINE: RapidOCR | None = None
 
@@ -30,7 +33,25 @@ class OCRTextResult:
 def _engine() -> RapidOCR:
     global _ENGINE
     if _ENGINE is None:
-        _ENGINE = RapidOCR()
+        _ENGINE = RapidOCR(
+            params={
+                "Global.use_cls": False,
+                "Global.max_side_len": 1400,
+                "Det.engine_type": EngineType.ONNXRUNTIME,
+                "Det.lang_type": LangDet.MULTI,
+                "Det.model_type": ModelType.MOBILE,
+                "Det.ocr_version": OCRVersion.PPOCRV4,
+                "Det.limit_side_len": 960,
+                "Rec.engine_type": EngineType.ONNXRUNTIME,
+                "Rec.lang_type": LangRec.LATIN,
+                "Rec.model_type": ModelType.MOBILE,
+                "Rec.ocr_version": OCRVersion.PPOCRV4,
+                "Rec.rec_batch_num": 1,
+                "EngineConfig.onnxruntime.intra_op_num_threads": 1,
+                "EngineConfig.onnxruntime.inter_op_num_threads": 1,
+                "EngineConfig.onnxruntime.enable_cpu_mem_arena": False,
+            }
+        )
     return _ENGINE
 
 
@@ -41,12 +62,7 @@ def _safe_close(value: object) -> None:
 
 
 def extract_pdf_ocr(data: bytes) -> OCRTextResult:
-    """Rasterize and OCR an image-only PDF.
-
-    Low-confidence individual lines are omitted before parsing. A document
-    beyond MAX_OCR_PAGES is explicitly marked truncated so processing can
-    fail closed to REVIEW rather than silently complete from partial OCR.
-    """
+    """Rasterize and OCR an image-only PDF with bounded memory use."""
     document = pdfium.PdfDocument(BytesIO(data))
     parts: list[str] = []
     confidences: list[float] = []
@@ -59,9 +75,9 @@ def extract_pdf_ocr(data: bytes) -> OCRTextResult:
             bitmap = None
             image = None
             try:
-                bitmap = page.render(scale=2.5)
+                bitmap = page.render(scale=OCR_RENDER_SCALE)
                 image = bitmap.to_pil().convert("RGB")
-                result = _engine()(image)
+                result = _engine()(image, use_cls=False)
 
                 raw_txts = getattr(result, "txts", None)
                 raw_scores = getattr(result, "scores", None)
@@ -91,8 +107,10 @@ def extract_pdf_ocr(data: bytes) -> OCRTextResult:
                 if bitmap is not None:
                     _safe_close(bitmap)
                 _safe_close(page)
+                gc.collect()
     finally:
         _safe_close(document)
+        gc.collect()
 
     confidence = sum(confidences) / len(confidences) if confidences else 0.0
     return OCRTextResult(
