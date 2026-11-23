@@ -9,6 +9,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from pypdf import PdfWriter
+from PIL import Image, ImageDraw, ImageFont
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
@@ -68,9 +69,40 @@ def _review_smoke_pdf() -> bytes:
     return output.getvalue()
 
 
+def _ocr_smoke_pdf() -> bytes:
+    image = Image.new("L", (1200, 900), 255)
+    draw = ImageDraw.Draw(image)
+    try:
+        font = ImageFont.load_default(size=34)
+        title_font = ImageFont.load_default(size=40)
+    except TypeError:
+        font = ImageFont.load_default()
+        title_font = font
+
+    lines = [
+        ("ZUNPY OCR TEST INVOICE", title_font),
+        ("Supplier: Suministros Ejemplo S.L.", font),
+        ("Invoice Number: FAC-2026-003", font),
+        ("Invoice Date: 2026-11-23", font),
+        ("Currency: EUR", font),
+        ("Subtotal: 100.00", font),
+        ("Tax: 21.00", font),
+        ("Total: 121.00", font),
+    ]
+    y = 60
+    for text, line_font in lines:
+        draw.text((80, y), text, fill=0, font=line_font)
+        y += 90
+
+    output = BytesIO()
+    image.convert("RGB").save(output, format="PDF", resolution=144.0)
+    return output.getvalue()
+
+
 @router.post("/test/job001-smoke", status_code=status.HTTP_201_CREATED)
 def job001_smoke(
     review_case: bool = False,
+    ocr_case: bool = False,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
     storage: R2Storage = Depends(get_storage),
@@ -80,6 +112,12 @@ def job001_smoke(
     This endpoint is intentionally internal-only. It creates a uniquely named
     synthetic order and one generated one-page PDF. No customer data is used.
     """
+    if review_case and ocr_case:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="review_case and ocr_case are mutually exclusive.",
+        )
+
     suffix = uuid4().hex[:12].upper()
     order_id = f"ZJ-TST-{suffix}"
     payment_reference = f"TEST-{uuid4().hex.upper()}"
@@ -107,11 +145,11 @@ def job001_smoke(
         order_id=order.order_id,
         new_status=OrderStatus.WAITING_UPLOAD,
         event_type="TEST_ORDER_READY",
-        detail={"kind": "job001-review-smoke" if review_case else "job001-production-smoke"},
+        detail={"kind": "job001-review-smoke" if review_case else ("job001-ocr-smoke" if ocr_case else "job001-production-smoke")},
     )
 
-    pdf = _review_smoke_pdf() if review_case else _smoke_pdf()
-    filename = "job001-review-smoke.pdf" if review_case else "job001-production-smoke.pdf"
+    pdf = _review_smoke_pdf() if review_case else (_ocr_smoke_pdf() if ocr_case else _smoke_pdf())
+    filename = "job001-review-smoke.pdf" if review_case else ("job001-ocr-smoke.pdf" if ocr_case else "job001-production-smoke.pdf")
     item, upload_url = create_upload_ticket(
         db,
         order=order,
