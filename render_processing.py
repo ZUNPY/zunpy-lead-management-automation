@@ -34,6 +34,10 @@ class ProcessingInfrastructureError(RuntimeError):
     pass
 
 
+class ReviewInvoiceNotFoundError(LookupError):
+    pass
+
+
 @dataclass(frozen=True)
 class ParsedInvoice:
     supplier: str | None
@@ -405,4 +409,171 @@ def process_order(db: Session, *, order_id: str, storage: R2Storage) -> dict[str
             }
             for invoice in invoices
         ],
+    }
+
+
+def resolve_invoice_review(
+    db: Session,
+    *,
+    order_id: str,
+    invoice_result_id: str,
+    supplier: str,
+    invoice_number: str,
+    invoice_date: date,
+    currency: str,
+    subtotal_cents: int,
+    tax_cents: int,
+    total_cents: int,
+    reviewer_note: str | None = None,
+) -> dict[str, object]:
+    """Apply one explicit human correction to a REVIEW invoice.
+
+    The order temporarily re-enters PROCESSING while the correction is
+    validated. It returns to REVIEW if any deterministic rule still fails;
+    it reaches COMPLETED only when every invoice in the order is OK.
+    """
+    order = db.scalar(select(Order).where(Order.order_id == order_id).with_for_update())
+    if order is None:
+        raise ProcessingOrderNotFoundError(order_id)
+    if order.status != OrderStatus.REVIEW:
+        raise InvalidProcessingStateError(
+            f"Order must be REVIEW before manual resolution; current state is {order.status.value}."
+        )
+
+    invoices = list(
+        db.scalars(
+            select(InvoiceResult)
+            .where(InvoiceResult.order_id == order_id)
+            .order_by(InvoiceResult.created_at, InvoiceResult.invoice_result_id)
+        )
+    )
+    if not invoices:
+        raise InvalidProcessingStateError("REVIEW order has no invoice results.")
+    if any(invoice.status not in {InvoiceStatus.OK, InvoiceStatus.REVIEW} for invoice in invoices):
+        raise InvalidProcessingStateError(
+            "REVIEW order contains invoices in an unexpected state."
+        )
+
+    invoice = next(
+        (item for item in invoices if item.invoice_result_id == invoice_result_id),
+        None,
+    )
+    if invoice is None:
+        raise ReviewInvoiceNotFoundError(invoice_result_id)
+    if invoice.status != InvoiceStatus.REVIEW:
+        raise InvalidProcessingStateError("Selected invoice is not awaiting review.")
+
+    transition_order(
+        db,
+        order_id=order_id,
+        new_status=OrderStatus.PROCESSING,
+        event_type="ORDER_REVIEW_RESOLUTION_STARTED",
+        detail={"invoice_result_id": invoice_result_id},
+    )
+
+    normalized_supplier = supplier.strip()
+    normalized_number = invoice_number.strip()
+    normalized_currency = currency.strip().upper()
+    issues: list[str] = []
+    reason: ReviewReason | None = None
+
+    if not normalized_supplier:
+        issues.append("supplier missing")
+        reason = ReviewReason.MISSING_SUPPLIER
+    if not normalized_number:
+        issues.append("invoice number missing")
+        reason = reason or ReviewReason.MISSING_INVOICE_NUMBER
+    if not re.fullmatch(r"[A-Z]{3}", normalized_currency):
+        issues.append("currency must be a three-letter code")
+        reason = reason or ReviewReason.CURRENCY_UNCLEAR
+    if min(subtotal_cents, tax_cents, total_cents) < 0:
+        issues.append("monetary fields must be non-negative")
+        reason = reason or ReviewReason.EXTRACTION_UNCERTAIN
+    if abs((subtotal_cents + tax_cents) - total_cents) > 1:
+        issues.append("subtotal + tax does not equal total")
+        reason = ReviewReason.TOTAL_MISMATCH
+
+    invoice.supplier = normalized_supplier or None
+    invoice.invoice_number = normalized_number or None
+    invoice.invoice_date = invoice_date
+    invoice.currency = normalized_currency or None
+    invoice.subtotal_cents = subtotal_cents
+    invoice.tax_cents = tax_cents
+    invoice.total_cents = total_cents
+    invoice.extraction_method = "manual_review_v1"
+
+    note_parts = list(issues)
+    if reviewer_note and reviewer_note.strip():
+        note_parts.append("reviewer note: " + reviewer_note.strip())
+
+    if issues:
+        invoice.status = InvoiceStatus.REVIEW
+        invoice.review_reason = reason or ReviewReason.EXTRACTION_UNCERTAIN
+        invoice.review_notes = "; ".join(note_parts)
+    else:
+        invoice.status = InvoiceStatus.OK
+        invoice.review_reason = None
+        invoice.review_notes = reviewer_note.strip() if reviewer_note and reviewer_note.strip() else None
+
+    add_event(
+        db,
+        order_id,
+        "INVOICE_REVIEW_APPLIED",
+        {
+            "invoice_result_id": invoice.invoice_result_id,
+            "status": invoice.status.value,
+            "review_reason": invoice.review_reason.value if invoice.review_reason else None,
+            "extraction_method": invoice.extraction_method,
+        },
+    )
+    db.commit()
+    db.refresh(invoice)
+
+    review_count = sum(item.status == InvoiceStatus.REVIEW for item in invoices)
+    ok_count = sum(item.status == InvoiceStatus.OK for item in invoices)
+    order = db.get(Order, order_id)
+    assert order is not None
+    order.review_count = review_count
+    db.commit()
+
+    if review_count:
+        order = transition_order(
+            db,
+            order_id=order_id,
+            new_status=OrderStatus.REVIEW,
+            event_type="ORDER_REVIEW_STILL_REQUIRED",
+            detail={"ok": ok_count, "review": review_count, "total": len(invoices)},
+        )
+        result = "job001_review_still_required"
+    else:
+        order = transition_order(
+            db,
+            order_id=order_id,
+            new_status=OrderStatus.COMPLETED,
+            event_type="ORDER_REVIEW_COMPLETED",
+            detail={"ok": ok_count, "review": 0, "total": len(invoices)},
+        )
+        result = "job001_review_resolved"
+
+    return {
+        "status": "ok",
+        "result": result,
+        "order_id": order_id,
+        "order_status": order.status.value,
+        "total": len(invoices),
+        "ok": ok_count,
+        "review": review_count,
+        "invoice": {
+            "invoice_result_id": invoice.invoice_result_id,
+            "status": invoice.status.value,
+            "review_reason": invoice.review_reason.value if invoice.review_reason else None,
+            "supplier": invoice.supplier,
+            "invoice_number": invoice.invoice_number,
+            "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
+            "currency": invoice.currency,
+            "subtotal_cents": invoice.subtotal_cents,
+            "tax_cents": invoice.tax_cents,
+            "total_cents": invoice.total_cents,
+            "extraction_method": invoice.extraction_method,
+        },
     }
