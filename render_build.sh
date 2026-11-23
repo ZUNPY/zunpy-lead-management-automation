@@ -31,6 +31,7 @@ cp -a "$SRC_DIR/alembic" ./alembic
 cp -a "$SRC_DIR/scripts" ./scripts
 cp "$SRC_DIR/alembic.ini" ./alembic.ini
 cp "$SRC_DIR/requirements.txt" ./requirements.txt
+cp render_internal.py ./app/api/routes/internal.py
 
 python -m pip install -r requirements.txt
 
