@@ -222,6 +222,64 @@ def job001_smoke(
     }
 
 
+@router.post("/test/job002-client-bootstrap", status_code=status.HTTP_201_CREATED)
+def job002_client_bootstrap(
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """Create one internal-only client bootstrap order for JOB-002 E2E testing.
+
+    The raw customer token is returned exactly once in this protected response.
+    Only its SHA-256 hash is persisted through the existing order service.
+    No files are uploaded and no processing is started here.
+    """
+    suffix = uuid4().hex[:12].upper()
+    order_id = f"ZJ-TST-{suffix}"
+    payment_reference = f"JOB002-TEST-{uuid4().hex.upper()}"
+    issued = issue_order_token(
+        access_ttl_hours=settings.order_access_token_ttl_hours,
+        upload_ttl_hours=settings.order_upload_token_ttl_hours,
+    )
+
+    order = create_order(
+        db,
+        order_id=order_id,
+        payload=OrderCreateInternal(
+            customer_email="job002-bootstrap@zunpyai.com",
+            payment_reference=payment_reference,
+            amount_cents=2900,
+            currency="EUR",
+            max_documents=1,
+        ),
+        access_token_hash=issued.token_hash,
+        access_expires_at=issued.access_expires_at,
+        upload_expires_at=issued.upload_expires_at,
+    )
+    order = transition_order(
+        db,
+        order_id=order.order_id,
+        new_status=OrderStatus.WAITING_UPLOAD,
+        event_type="TEST_ORDER_READY",
+        detail={"kind": "job002-client-bootstrap"},
+    )
+
+    token_hash_verified = verify_token(issued.raw, order.access_token_hash)
+    if not token_hash_verified:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Stored order token hash verification failed.",
+        )
+
+    return {
+        "status": "ok",
+        "result": "job002_client_bootstrap_ready",
+        "order_id": order.order_id,
+        "order_token": issued.raw,
+        "order_status": order.status.value,
+        "token_hash_verified": token_hash_verified,
+    }
+
+
 @router.post("/orders/{order_id}/start")
 def start_order(
     order_id: str,
