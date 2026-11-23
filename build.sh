@@ -3,9 +3,14 @@ set -euo pipefail
 
 cat \
   deploy_parts/source.part-00 \
-  deploy_parts/source.part-01 \
+  deploy_parts/fix-01a \
+  deploy_parts/fix-01b \
   deploy_parts/source.part-02 \
-  deploy_parts/source.part-03 \
+  deploy_parts/fix-03a \
+  deploy_parts/fix-03b \
+  deploy_parts/fix-04a \
+  deploy_parts/fix-04b1 \
+  deploy_parts/fix-04b2 \
   deploy_parts/source.part-05 \
   deploy_parts/source.part-06 \
   deploy_parts/source.part-07 \
