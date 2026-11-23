@@ -9,7 +9,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from pypdf import PdfWriter
-from PIL import Image, ImageDraw, ImageFont
+import pypdfium2 as pdfium
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
@@ -70,33 +70,32 @@ def _review_smoke_pdf() -> bytes:
 
 
 def _ocr_smoke_pdf() -> bytes:
-    image = Image.new("L", (1200, 900), 255)
-    draw = ImageDraw.Draw(image)
+    """Create an image-only scan from the already verified digital fixture."""
+    document = pdfium.PdfDocument(BytesIO(_smoke_pdf()))
+    page = document[0]
+    bitmap = None
+    image = None
     try:
-        font = ImageFont.load_default(size=34)
-        title_font = ImageFont.load_default(size=40)
-    except TypeError:
-        font = ImageFont.load_default()
-        title_font = font
-
-    lines = [
-        ("ZUNPY OCR TEST INVOICE", title_font),
-        ("Supplier: Suministros Ejemplo S.L.", font),
-        ("Invoice Number: FAC-2026-003", font),
-        ("Invoice Date: 2026-11-23", font),
-        ("Currency: EUR", font),
-        ("Subtotal: 100.00", font),
-        ("Tax: 21.00", font),
-        ("Total: 121.00", font),
-    ]
-    y = 60
-    for text, line_font in lines:
-        draw.text((80, y), text, fill=0, font=line_font)
-        y += 90
-
-    output = BytesIO()
-    image.convert("RGB").save(output, format="PDF", resolution=144.0)
-    return output.getvalue()
+        bitmap = page.render(scale=2.4)
+        image = bitmap.to_pil().convert("RGB")
+        output = BytesIO()
+        image.save(output, format="PDF", resolution=144.0)
+        return output.getvalue()
+    finally:
+        if image is not None:
+            close = getattr(image, "close", None)
+            if callable(close):
+                close()
+        if bitmap is not None:
+            close = getattr(bitmap, "close", None)
+            if callable(close):
+                close()
+        close = getattr(page, "close", None)
+        if callable(close):
+            close()
+        close = getattr(document, "close", None)
+        if callable(close):
+            close()
 
 
 @router.post("/test/job001-smoke", status_code=status.HTTP_201_CREATED)
