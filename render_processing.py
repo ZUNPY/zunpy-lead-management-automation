@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import InvoiceResult, InvoiceStatus, Order, OrderStatus, ReviewReason
+from app.services.ocr import extract_pdf_ocr
 from app.services.orders import add_event, transition_order
 from app.services.storage import R2Storage, StorageObjectNotFoundError
 
@@ -280,39 +281,106 @@ def _process_invoice(db: Session, storage: R2Storage, invoice: InvoiceResult) ->
             f"Validated PDF could not be read during processing: {type(exc).__name__}."
         ) from exc
 
-    if not text:
-        invoice.status = InvoiceStatus.REVIEW
-        invoice.review_reason = ReviewReason.LOW_QUALITY_SCAN
-        invoice.review_notes = "No extractable text found; OCR/manual review required."
-        invoice.extraction_method = "pypdf_text_v1"
-    else:
-        parsed = parse_invoice_text(text)
-        invoice.supplier = parsed.supplier
-        invoice.invoice_number = parsed.invoice_number
-        invoice.invoice_date = parsed.invoice_date
-        invoice.currency = parsed.currency
-        invoice.subtotal_cents = parsed.subtotal_cents
-        invoice.tax_cents = parsed.tax_cents
-        invoice.total_cents = parsed.total_cents
-        invoice.review_reason = parsed.review_reason
-        invoice.review_notes = parsed.review_notes
-        invoice.extraction_method = "pypdf_text_v1"
-        invoice.status = InvoiceStatus.REVIEW if parsed.review_reason else InvoiceStatus.OK
+    ocr_confidence: float | None = None
+    ocr_truncated = False
 
-    add_event(
-        db,
-        invoice.order_id,
-        "INVOICE_PROCESSED",
-        {
-            "invoice_result_id": invoice.invoice_result_id,
-            "status": invoice.status.value,
-            "review_reason": invoice.review_reason.value if invoice.review_reason else None,
-            "extraction_method": invoice.extraction_method,
-        },
-    )
+    if text:
+        parsed = parse_invoice_text(text)
+        extraction_method = "pypdf_text_v1"
+    else:
+        try:
+            ocr = extract_pdf_ocr(data)
+        except Exception as exc:
+            invoice.status = InvoiceStatus.REVIEW
+            invoice.review_reason = ReviewReason.LOW_QUALITY_SCAN
+            invoice.review_notes = f"OCR fallback unavailable: {type(exc).__name__}."
+            invoice.extraction_method = "rapidocr_onnx_v1"
+            add_event(
+                db,
+                invoice.order_id,
+                "INVOICE_PROCESSED",
+                {
+                    "invoice_result_id": invoice.invoice_result_id,
+                    "status": invoice.status.value,
+                    "review_reason": invoice.review_reason.value,
+                    "extraction_method": invoice.extraction_method,
+                    "ocr_error": type(exc).__name__,
+                },
+            )
+            db.commit()
+            db.refresh(invoice)
+            return
+
+        text = ocr.text
+        ocr_confidence = ocr.mean_confidence
+        ocr_truncated = ocr.truncated
+        extraction_method = "rapidocr_onnx_v1"
+
+        if not text:
+            invoice.status = InvoiceStatus.REVIEW
+            invoice.review_reason = ReviewReason.LOW_QUALITY_SCAN
+            invoice.review_notes = "OCR found no sufficiently confident text; manual review required."
+            invoice.extraction_method = extraction_method
+            add_event(
+                db,
+                invoice.order_id,
+                "INVOICE_PROCESSED",
+                {
+                    "invoice_result_id": invoice.invoice_result_id,
+                    "status": invoice.status.value,
+                    "review_reason": invoice.review_reason.value,
+                    "extraction_method": invoice.extraction_method,
+                    "ocr_confidence": round(ocr_confidence, 4),
+                },
+            )
+            db.commit()
+            db.refresh(invoice)
+            return
+
+        parsed = parse_invoice_text(text)
+
+    invoice.supplier = parsed.supplier
+    invoice.invoice_number = parsed.invoice_number
+    invoice.invoice_date = parsed.invoice_date
+    invoice.currency = parsed.currency
+    invoice.subtotal_cents = parsed.subtotal_cents
+    invoice.tax_cents = parsed.tax_cents
+    invoice.total_cents = parsed.total_cents
+    invoice.review_reason = parsed.review_reason
+    invoice.review_notes = parsed.review_notes
+    invoice.extraction_method = extraction_method
+
+    if extraction_method == "rapidocr_onnx_v1":
+        uncertainty_notes: list[str] = []
+        if ocr_confidence is None or ocr_confidence < 0.80:
+            uncertainty_notes.append(
+                f"OCR mean confidence below acceptance threshold: {(ocr_confidence or 0.0):.3f} < 0.800"
+            )
+        if ocr_truncated:
+            uncertainty_notes.append("OCR page limit reached; document was only partially OCR-processed.")
+
+        if uncertainty_notes:
+            invoice.review_reason = invoice.review_reason or ReviewReason.EXTRACTION_UNCERTAIN
+            existing = invoice.review_notes.strip() if invoice.review_notes else ""
+            invoice.review_notes = "; ".join(
+                [value for value in [existing, *uncertainty_notes] if value]
+            )
+
+    invoice.status = InvoiceStatus.REVIEW if invoice.review_reason else InvoiceStatus.OK
+
+    detail: dict[str, object] = {
+        "invoice_result_id": invoice.invoice_result_id,
+        "status": invoice.status.value,
+        "review_reason": invoice.review_reason.value if invoice.review_reason else None,
+        "extraction_method": invoice.extraction_method,
+    }
+    if ocr_confidence is not None:
+        detail["ocr_confidence"] = round(ocr_confidence, 4)
+        detail["ocr_truncated"] = ocr_truncated
+
+    add_event(db, invoice.order_id, "INVOICE_PROCESSED", detail)
     db.commit()
     db.refresh(invoice)
-
 
 def process_order(db: Session, *, order_id: str, storage: R2Storage) -> dict[str, object]:
     order = db.scalar(select(Order).where(Order.order_id == order_id).with_for_update())
