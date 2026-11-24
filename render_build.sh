@@ -36,6 +36,8 @@ cp render_processing.py ./app/services/processing.py
 cp render_ocr.py ./app/services/ocr.py
 cp render_results.py ./app/services/results.py
 cp render_orders.py ./app/api/routes/orders.py
+cp render_paypal.py ./app/api/routes/paypal.py
+cp render_payments.py ./app/services/payments.py
 
 python -m pip install -r requirements.txt
 python -m pip install "rapidocr==3.10.0" "onnxruntime==1.32.0" "pypdfium2==5.15.2"
