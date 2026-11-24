@@ -17,6 +17,12 @@ from app.services.files import (
     finalize_upload,
     submit_order as submit_order_service,
 )
+from app.services.processing import (
+    InvalidProcessingStateError,
+    ProcessingInfrastructureError,
+    ProcessingOrderNotFoundError,
+    process_order,
+)
 from app.services.results import (
     ResultDataError,
     ResultExpiredError,
@@ -107,11 +113,24 @@ def complete_upload(
 def submit_order(
     order: Order = Depends(require_order_upload_access),
     db: Session = Depends(get_db),
+    storage: R2Storage = Depends(get_storage),
 ) -> Order:
     try:
-        return submit_order_service(db, order_id=order.order_id)
+        submitted = submit_order_service(db, order_id=order.order_id)
+        process_order(db, order_id=submitted.order_id, storage=storage)
+        db.expire_all()
+        processed = db.get(Order, submitted.order_id)
+        if processed is None:
+            raise ProcessingOrderNotFoundError(submitted.order_id)
+        return processed
     except InvalidUploadStateError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ProcessingOrderNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.") from exc
+    except InvalidProcessingStateError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ProcessingInfrastructureError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
 
 @router.get("/{order_id}/status", response_model=OrderStatusResponse)
