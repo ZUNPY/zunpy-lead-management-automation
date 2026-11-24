@@ -166,10 +166,12 @@ def create_paypal_order(
             }
         ],
     }
+    headers = _bearer_headers(settings)
+    headers["PayPal-Request-Id"] = f"ZUNPY-CREATE-{claim_secret}"[:108]
     payload = _request_json(
         url=f"{_api_base_url()}/v2/checkout/orders",
         method="POST",
-        headers=_bearer_headers(settings),
+        headers=headers,
         data=json.dumps(body, separators=(",", ":")).encode("utf-8"),
     )
     order_id = payload.get("id")
@@ -286,10 +288,12 @@ def capture_paypal_order(
     claim_secret: str,
 ) -> VerifiedPayPalOrder:
     try:
+        headers = _bearer_headers(settings)
+        headers["PayPal-Request-Id"] = f"ZUNPY-CAPTURE-{paypal_order_id}"[:108]
         payload = _request_json(
             url=f"{_api_base_url()}/v2/checkout/orders/{quote(paypal_order_id, safe='')}/capture",
             method="POST",
-            headers=_bearer_headers(settings),
+            headers=headers,
             data=b"{}",
         )
         return _verify_completed_payload(payload, expected_claim_secret=claim_secret)
