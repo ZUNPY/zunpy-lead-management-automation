@@ -14,6 +14,7 @@ from app.schemas.order import OrderCreateInternal
 from app.security.tokens import issue_order_token
 from app.services.orders import (
     DuplicatePaymentReferenceError,
+    add_event,
     create_order,
     get_order_by_payment_reference,
     transition_order,
@@ -121,9 +122,35 @@ def capture_checkout_order(
     )
 
     if existing is not None:
+        if existing.status in {
+            OrderStatus.CANCELLED,
+            OrderStatus.REFUNDED,
+            OrderStatus.FAILED,
+        }:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Existing ZUNPY order is {existing.status.value}.",
+            )
+        if existing.status == OrderStatus.PAID:
+            existing = transition_order(
+                db,
+                order_id=existing.order_id,
+                new_status=OrderStatus.WAITING_UPLOAD,
+                event_type="PAYPAL_CLAIM_RECOVERED",
+                detail={
+                    "paypal_order_id": verified.order_id,
+                    "capture_id": verified.capture_id,
+                },
+            )
         existing.access_token_hash = issued.token_hash
         existing.access_expires_at = issued.access_expires_at
         existing.upload_expires_at = issued.upload_expires_at
+        add_event(
+            db,
+            existing.order_id,
+            "ORDER_TOKEN_REISSUED",
+            {"reason": "verified_paypal_claim_retry"},
+        )
         db.commit()
         db.refresh(existing)
         return {
