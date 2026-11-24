@@ -81,13 +81,7 @@ def _request_json(
         with urlopen(request, timeout=timeout) as response:
             raw = response.read()
     except HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            detail = ""
-        suffix = f": {detail}" if detail else ""
-        raise PaymentProviderError(f"PayPal HTTP {exc.code}{suffix}") from exc
+        raise PaymentProviderError(f"PayPal HTTP {exc.code}") from exc
     except (URLError, TimeoutError) as exc:
         raise PaymentProviderError(f"PayPal request failed: {type(exc).__name__}") from exc
 
@@ -168,6 +162,7 @@ def create_paypal_order(
     }
     headers = _bearer_headers(settings)
     headers["PayPal-Request-Id"] = f"ZUNPY-CREATE-{claim_secret}"[:108]
+    headers["Prefer"] = "return=representation"
     payload = _request_json(
         url=f"{_api_base_url()}/v2/checkout/orders",
         method="POST",
@@ -290,6 +285,7 @@ def capture_paypal_order(
     try:
         headers = _bearer_headers(settings)
         headers["PayPal-Request-Id"] = f"ZUNPY-CAPTURE-{paypal_order_id}"[:108]
+        headers["Prefer"] = "return=representation"
         payload = _request_json(
             url=f"{_api_base_url()}/v2/checkout/orders/{quote(paypal_order_id, safe='')}/capture",
             method="POST",
@@ -297,9 +293,10 @@ def capture_paypal_order(
             data=b"{}",
         )
         return _verify_completed_payload(payload, expected_claim_secret=claim_secret)
-    except PaymentProviderError:
-        # A retry may arrive after PayPal has already captured the order. In that
-        # case Show Order Details is the authoritative recovery path.
+    except (PaymentProviderError, PaymentValidationError):
+        # A retry may arrive after PayPal has already captured the order, and
+        # some capture responses can be minimal. Show Order Details is the
+        # authoritative recovery path in both cases.
         return show_paypal_order(
             settings,
             paypal_order_id=paypal_order_id,
