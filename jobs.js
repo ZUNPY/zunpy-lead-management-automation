@@ -1,5 +1,10 @@
 "use strict";
 (() => {
+  // Use the same origin as the PayPal return URL to preserve session state.
+  if (location.hostname === "www.zunpyai.com") {
+    location.replace("https://zunpyai.com" + location.pathname + location.search + location.hash);
+    return;
+  }
   const API = "https://zunpy-jobs-api.onrender.com/v1";
   const STORAGE = "zunpy-job001-sandbox-v1";
   const MAX = 10485760;
