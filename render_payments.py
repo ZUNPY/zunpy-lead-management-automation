@@ -3,6 +3,7 @@ from __future__ import annotations
 from base64 import b64encode
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from hmac import compare_digest
 import json
 import os
 from typing import Any
@@ -197,6 +198,8 @@ def _amount_to_cents(value: object) -> int:
         amount = Decimal(value)
     except InvalidOperation as exc:
         raise PaymentValidationError("PayPal amount is invalid.") from exc
+    if not amount.is_finite() or amount <= 0 or amount > Decimal('1000000'):
+        raise PaymentValidationError("PayPal amount is outside the supported range.")
     cents = amount * 100
     if cents != cents.to_integral_value():
         raise PaymentValidationError("PayPal amount has unsupported precision.")
@@ -273,18 +276,36 @@ def _verify_completed_payload(
     )
 
 
-def show_paypal_order(
-    settings: Settings,
+def _verify_order_before_capture(
+    payload: dict[str, Any],
     *,
     paypal_order_id: str,
     claim_secret: str,
-) -> VerifiedPayPalOrder:
-    payload = _request_json(
-        url=f"{_api_base_url()}/v2/checkout/orders/{quote(paypal_order_id, safe='')}",
-        method="GET",
-        headers=_bearer_headers(settings),
-    )
-    return _verify_completed_payload(payload, expected_claim_secret=claim_secret)
+    expected_amount_cents: int,
+    expected_currency: str,
+) -> None:
+    if payload.get("id") != paypal_order_id or payload.get("intent") != "CAPTURE":
+        raise PaymentValidationError("Unexpected PayPal order identity or intent.")
+    units = payload.get("purchase_units")
+    if not isinstance(units, list) or len(units) != 1 or not isinstance(units[0], dict):
+        raise PaymentValidationError("Expected exactly one PayPal purchase unit.")
+    unit = units[0]
+    custom_id = unit.get("custom_id")
+    if not isinstance(custom_id, str) or not compare_digest(
+        custom_id.encode("utf-8"), f"ZUNPY:{claim_secret}".encode("utf-8")
+    ):
+        raise PaymentValidationError("PayPal claim secret does not match.")
+    if unit.get("reference_id") != "ZUNPY-JOB001":
+        raise PaymentValidationError("PayPal service reference does not match.")
+    amount = unit.get("amount")
+    if (
+        not isinstance(amount, dict)
+        or amount.get("currency_code") != expected_currency
+        or _amount_to_cents(amount.get("value")) != expected_amount_cents
+    ):
+        raise PaymentValidationError("PayPal order amount or currency does not match.")
+    if payload.get("status") not in {"APPROVED", "COMPLETED"}:
+        raise PaymentValidationError("PayPal order has not been approved.")
 
 
 def capture_paypal_order(
@@ -292,27 +313,57 @@ def capture_paypal_order(
     *,
     paypal_order_id: str,
     claim_secret: str,
+    expected_amount_cents: int,
+    expected_currency: str,
 ) -> VerifiedPayPalOrder:
+    headers = _bearer_headers(settings)
+    url = f"{_api_base_url()}/v2/checkout/orders/{quote(paypal_order_id, safe='')}"
+    before = _request_json(url=url, method="GET", headers=headers)
+    _verify_order_before_capture(
+        before,
+        paypal_order_id=paypal_order_id,
+        claim_secret=claim_secret,
+        expected_amount_cents=expected_amount_cents,
+        expected_currency=expected_currency,
+    )
+
+    def verified_result(payload: dict[str, Any]) -> VerifiedPayPalOrder:
+        result = _verify_completed_payload(payload, expected_claim_secret=claim_secret)
+        if (
+            result.order_id != paypal_order_id
+            or result.amount_cents != expected_amount_cents
+            or result.currency != expected_currency
+        ):
+            raise PaymentValidationError("PayPal capture identity or amount does not match.")
+        return result
+
+    if before.get("status") == "COMPLETED":
+        return verified_result(before)
+
+    capture_headers = {
+        **headers,
+        "PayPal-Request-Id": f"ZUNPY-CAPTURE-{paypal_order_id}"[:108],
+        "Prefer": "return=representation",
+    }
     try:
-        headers = _bearer_headers(settings)
-        headers["PayPal-Request-Id"] = f"ZUNPY-CAPTURE-{paypal_order_id}"[:108]
-        headers["Prefer"] = "return=representation"
-        payload = _request_json(
-            url=f"{_api_base_url()}/v2/checkout/orders/{quote(paypal_order_id, safe='')}/capture",
+        captured = _request_json(
+            url=f"{url}/capture",
             method="POST",
-            headers=headers,
+            headers=capture_headers,
             data=b"{}",
         )
-        return _verify_completed_payload(payload, expected_claim_secret=claim_secret)
+        return verified_result(captured)
     except (PaymentProviderError, PaymentValidationError):
-        # A retry may arrive after PayPal has already captured the order, and
-        # some capture responses can be minimal. Show Order Details is the
-        # authoritative recovery path in both cases.
-        return show_paypal_order(
-            settings,
+        # Never repeat the capture POST after an ambiguous response.
+        after = _request_json(url=url, method="GET", headers=headers)
+        _verify_order_before_capture(
+            after,
             paypal_order_id=paypal_order_id,
             claim_secret=claim_secret,
+            expected_amount_cents=expected_amount_cents,
+            expected_currency=expected_currency,
         )
+        return verified_result(after)
 
 
 def verify_webhook_signature(
