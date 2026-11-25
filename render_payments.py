@@ -149,8 +149,9 @@ def _claim_matches(custom_id: object, claim_secret: str, *, allow_legacy: bool =
     if not isinstance(custom_id, str):
         return False
     expected = _claim_custom_id(claim_secret)
-    if compare_digest(custom_id.encode("utf-8"), expected.encode("utf-8")):
-        return True
+    if custom_id.startswith("ZUNPY:SHA256:"):
+        return compare_digest(custom_id.encode("utf-8"), expected.encode("utf-8"))
+    # Never interpret a new digest as a legacy plaintext credential.
     # Compatibility with orders created before JOB-005.2.
     return allow_legacy and compare_digest(
         custom_id.encode("utf-8"), f"ZUNPY:{claim_secret}".encode("utf-8")
