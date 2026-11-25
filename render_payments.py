@@ -4,6 +4,7 @@ from base64 import b64encode
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from hmac import compare_digest
+from hashlib import sha256
 import json
 import os
 from typing import Any
@@ -136,6 +137,26 @@ def _find_link(payload: dict[str, Any], rel: str) -> str | None:
     return None
 
 
+def _claim_digest(claim_secret: str) -> str:
+    return sha256(claim_secret.encode("utf-8")).hexdigest()
+
+
+def _claim_custom_id(claim_secret: str) -> str:
+    return f"ZUNPY:SHA256:{_claim_digest(claim_secret)}"
+
+
+def _claim_matches(custom_id: object, claim_secret: str, *, allow_legacy: bool = True) -> bool:
+    if not isinstance(custom_id, str):
+        return False
+    expected = _claim_custom_id(claim_secret)
+    if compare_digest(custom_id.encode("utf-8"), expected.encode("utf-8")):
+        return True
+    # Compatibility with orders created before JOB-005.2.
+    return allow_legacy and compare_digest(
+        custom_id.encode("utf-8"), f"ZUNPY:{claim_secret}".encode("utf-8")
+    )
+
+
 def create_paypal_order(
     settings: Settings,
     *,
@@ -163,7 +184,7 @@ def create_paypal_order(
         "purchase_units": [
             {
                 "reference_id": "ZUNPY-JOB001",
-                "custom_id": f"ZUNPY:{claim_secret}",
+                "custom_id": _claim_custom_id(claim_secret),
                 "description": "ZUNPY invoice PDF to structured CSV",
                 "amount": {
                     "currency_code": normalized_currency,
@@ -173,7 +194,7 @@ def create_paypal_order(
         ],
     }
     headers = _bearer_headers(settings)
-    headers["PayPal-Request-Id"] = f"ZUNPY-CREATE-{claim_secret}"[:108]
+    headers["PayPal-Request-Id"] = f"ZUNPY-CREATE-{_claim_digest(claim_secret)}"
     headers["Prefer"] = "return=representation"
     payload = _request_json(
         url=f"{_api_base_url()}/v2/checkout/orders",
@@ -225,8 +246,7 @@ def _verify_completed_payload(
         raise PaymentValidationError("PayPal purchase unit is invalid.")
 
     custom_id = purchase_unit.get("custom_id")
-    expected_custom_id = f"ZUNPY:{expected_claim_secret}"
-    if custom_id != expected_custom_id:
+    if not _claim_matches(custom_id, expected_claim_secret):
         raise PaymentValidationError("PayPal claim secret does not match.")
 
     payments = purchase_unit.get("payments")
@@ -291,9 +311,7 @@ def _verify_order_before_capture(
         raise PaymentValidationError("Expected exactly one PayPal purchase unit.")
     unit = units[0]
     custom_id = unit.get("custom_id")
-    if not isinstance(custom_id, str) or not compare_digest(
-        custom_id.encode("utf-8"), f"ZUNPY:{claim_secret}".encode("utf-8")
-    ):
+    if not _claim_matches(custom_id, claim_secret):
         raise PaymentValidationError("PayPal claim secret does not match.")
     if unit.get("reference_id") != "ZUNPY-JOB001":
         raise PaymentValidationError("PayPal service reference does not match.")
@@ -364,6 +382,42 @@ def capture_paypal_order(
             expected_currency=expected_currency,
         )
         return verified_result(after)
+
+
+def recover_completed_paypal_order(
+    settings: Settings,
+    *,
+    paypal_order_id: str,
+    claim_secret: str,
+    expected_amount_cents: int,
+    expected_currency: str,
+) -> VerifiedPayPalOrder:
+    """Read-only payment reconciliation; never calls PayPal capture."""
+    payload = _request_json(
+        url=f"{_api_base_url()}/v2/checkout/orders/{quote(paypal_order_id, safe='')}",
+        method="GET",
+        headers=_bearer_headers(settings),
+    )
+    _verify_order_before_capture(
+        payload,
+        paypal_order_id=paypal_order_id,
+        claim_secret=claim_secret,
+        expected_amount_cents=expected_amount_cents,
+        expected_currency=expected_currency,
+    )
+    # Legacy raw claims may have been visible in provider metadata. They
+    # are intentionally not eligible for this new recovery mechanism.
+    if not _claim_matches(payload["purchase_units"][0].get("custom_id"),
+                          claim_secret, allow_legacy=False):
+        raise PaymentValidationError("Order is not eligible for secure recovery.")
+    result = _verify_completed_payload(payload, expected_claim_secret=claim_secret)
+    if (
+        result.order_id != paypal_order_id
+        or result.amount_cents != expected_amount_cents
+        or result.currency != expected_currency
+    ):
+        raise PaymentValidationError("PayPal recovery identity or amount does not match.")
+    return result
 
 
 def verify_webhook_signature(
