@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>ZUNPY · Prueba de facturas</title>
+<style>
+body{margin:0;background:#06111f;color:#f7fbff;font:16px/1.5 system-ui}
+main{max-width:36rem;margin:8vh auto;padding:1.5rem}
+a{color:#70f6ff}section{margin:1.5rem 0}label{display:block;margin-bottom:.4rem}
+input,button{font:inherit;margin:.35rem 0;padding:.45rem;max-width:100%}
+button{background:#19e7f2;color:#06111f;border:0;border-radius:.4rem;cursor:pointer}
+button:disabled{opacity:.6;cursor:wait}
+</style>
+<script src="checkout-sandbox.js" defer></script>
+</head>
+<body>
+<main>
+<a href="./">ZUNPY</a>
+<h1>Facturas PDF a CSV</h1>
+<p>Prueba de PayPal Sandbox. Usa una cuenta personal de prueba y una factura ficticia. Precio de prueba: 29 EUR.</p>
+<form id="setup">
+<label for="client">Client ID público de la app PayPal Sandbox</label>
+<input id="client" required autocomplete="off" pattern="[A-Za-z0-9_-]+">
+<button>Mostrar PayPal</button>
+</form>
+<div id="paypal"></div>
+<button id="retry" type="button" hidden>Recuperar pedido</button>
+<section id="invoice" hidden>
+<form id="upload">
+<label for="pdf">Factura PDF</label>
+<input id="pdf" type="file" accept=".pdf,application/pdf" required>
+<button>Procesar factura</button>
+</form>
+<button id="refresh" type="button">Consultar pedido</button>
+<a id="download" hidden>Descargar CSV</a>
+</section>
+<p id="status" role="status" aria-live="polite"></p>
+</main>
+</body>
+</html>
