@@ -96,5 +96,57 @@ class CaptureSecurityTests(unittest.TestCase):
         self.assertEqual(self.methods(), ["GET", "POST", "GET"])
 
 
+class RecoverySecurityTests(unittest.TestCase):
+    def invoke(self, payload, claim=CLAIM):
+        with patch.object(payments, "_bearer_headers", return_value={}), \
+             patch.object(payments, "_api_base_url", return_value="https://api-m.sandbox.paypal.com"), \
+             patch.object(payments, "_request_json", return_value=payload) as http:
+            self.http = http
+            return payments.recover_completed_paypal_order(
+                object(), paypal_order_id=ORDER, claim_secret=claim,
+                expected_amount_cents=2900, expected_currency="EUR",
+            )
+
+    def test_create_does_not_send_plaintext_claim(self):
+        with patch.object(payments, "_bearer_headers", return_value={}), \
+             patch.object(payments, "_api_base_url", return_value="https://api-m.sandbox.paypal.com"), \
+             patch.object(payments, "_request_json", return_value={"id": ORDER}) as http:
+            payments.create_paypal_order(object(), amount_cents=2900,
+                                         currency="EUR", claim_secret=CLAIM)
+            request = http.call_args.kwargs
+            body = payments.json.loads(request["data"])
+            self.assertEqual(body["purchase_units"][0]["custom_id"],
+                             payments._claim_custom_id(CLAIM))
+            self.assertNotIn(CLAIM, request["data"].decode())
+            self.assertNotIn(CLAIM, request["headers"]["PayPal-Request-Id"])
+
+    def test_hashed_claim_cannot_be_used_as_plaintext(self):
+        value = payments._claim_custom_id(CLAIM)
+        self.assertTrue(payments._claim_matches(value, CLAIM))
+        self.assertFalse(payments._claim_matches(value, value.removeprefix("ZUNPY:")))
+
+    def test_recover_completed_order_only_uses_get(self):
+        p = completed()
+        p["purchase_units"][0]["custom_id"] = payments._claim_custom_id(CLAIM)
+        self.assertEqual(self.invoke(p).capture_id, "TESTCAPTURE01")
+        self.assertEqual([c.kwargs["method"] for c in self.http.call_args_list], ["GET"])
+
+    def test_recovery_rejects_unapproved_legacy_or_invalid_claims(self):
+        for p, claim in [(approved(), CLAIM), (completed(), CLAIM)]:
+            with self.assertRaises(payments.PaymentValidationError):
+                self.invoke(p, claim)
+            self.assertEqual(self.http.call_count, 1)
+        p = approved()
+        p["purchase_units"][0]["custom_id"] = payments._claim_custom_id(CLAIM)
+        with self.assertRaises(payments.PaymentValidationError):
+            self.invoke(p)
+        self.assertEqual(self.http.call_count, 1)
+        p = completed()
+        p["purchase_units"][0]["custom_id"] = payments._claim_custom_id(CLAIM)
+        with self.assertRaises(payments.PaymentValidationError):
+            self.invoke(p, "wrong-secret")
+        self.assertEqual(self.http.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
