@@ -148,6 +148,17 @@ def create_paypal_order(
     value = f"{Decimal(amount_cents) / Decimal(100):.2f}"
     body = {
         "intent": "CAPTURE",
+        "payment_source": {
+            "paypal": {
+                "experience_context": {
+                    "brand_name": "ZUNPY",
+                    "shipping_preference": "NO_SHIPPING",
+                    "user_action": "PAY_NOW",
+                    "return_url": "https://zunpyai.com/jobs.html?paypal=approved",
+                    "cancel_url": "https://zunpyai.com/jobs.html?paypal=cancelled",
+                }
+            }
+        },
         "purchase_units": [
             {
                 "reference_id": "ZUNPY-JOB001",
