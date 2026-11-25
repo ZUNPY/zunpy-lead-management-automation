@@ -91,6 +91,8 @@ def capture_checkout_order(
             settings,
             paypal_order_id=paypal_order_id,
             claim_secret=payload.claim_secret,
+            expected_amount_cents=JOB001_PRICE_CENTS,
+            expected_currency=JOB001_CURRENCY,
         )
     except PaymentConfigurationError as exc:
         raise HTTPException(
