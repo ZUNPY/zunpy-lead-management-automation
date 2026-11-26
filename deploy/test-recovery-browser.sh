@@ -18,6 +18,11 @@ DB="zunpy-browser-db-$$"
 API="zunpy-browser-api-$$"
 NET="zunpy-browser-net-$$"
 cleanup() {
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "BROWSER_ACCEPTANCE: FAILED (exit $rc)" >&2
+        sudo docker logs --tail 60 "$API" >&2 || true
+    fi
     sudo docker rm -fv "$API" "$DB" >/dev/null 2>&1 || true
     sudo docker network rm "$NET" >/dev/null 2>&1 || true
     rm -rf "$WORK"
@@ -51,6 +56,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.db.session import get_db
 from app.models import Order, OrderStatus
 from app.schemas.order import OrderStatusResponse
 from app.security.tokens import hash_token, utcnow
@@ -64,18 +70,19 @@ EXCHANGE = Path("/exchange")
 engine = create_engine(get_settings().database_url)
 with Session(engine) as db, db.begin():
     now = utcnow()
-    db.add(Order(order_id=ORDER, customer_email=EMAIL,
+    for oid in (ORDER, "ZJ-PREFLIGHT-TEST"):
+        db.add(Order(order_id=oid, customer_email=EMAIL,
         status=OrderStatus.WAITING_UPLOAD, payment_provider="paypal",
-        payment_reference="PAYPAL:BROWSERTEST", amount_cents=2900,
+        payment_reference="PAYPAL:"+oid, amount_cents=2900,
         currency="EUR", max_documents=1, access_token_hash=hash_token(OLD),
         access_expires_at=now+timedelta(days=1),
         upload_expires_at=now+timedelta(hours=1)))
 
 def capture_delivery(delivery):
-    assert delivery.order_id == ORDER and delivery.recipient == EMAIL
+    assert delivery.order_id in (ORDER, "ZJ-PREFLIGHT-TEST") and delivery.recipient == EMAIL
     link = "http://127.0.0.1:18765/jobs.html#" + urlencode({
         "order": delivery.order_id, "recovery": delivery.raw_token})
-    p = EXCHANGE / "link"
+    p = EXCHANGE / ("link" if delivery.order_id == ORDER else "preflight-link")
     fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(link + "\n")
@@ -83,6 +90,10 @@ def capture_delivery(delivery):
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 config = PublicRecoveryConfig(secrets.token_bytes(32), capture_delivery)
 app.dependency_overrides[get_public_recovery_config] = lambda: config
+def sandbox_db():
+    with Session(engine) as db:
+        yield db
+app.dependency_overrides[get_db] = sandbox_db
 app.include_router(router, prefix="/v1")
 app.get("/v1/orders/{order_id}/status", response_model=OrderStatusResponse)(order_status)
 
@@ -98,6 +109,8 @@ def js():
 @app.middleware("http")
 async def observe(request, call_next):
     response = await call_next(request)
+    if request.url.path.startswith("/v1/"):
+        print("SANDBOX_HTTP", request.method, response.status_code, flush=True)
     if request.url.path == f"/v1/orders/{ORDER}/status" and response.status_code == 200:
         (EXCHANGE / "browser_status_ok").touch(mode=0o600)
     return response
@@ -128,12 +141,26 @@ for i in $(seq 1 30); do
     sleep 1
 done
 curl -fsS --max-time 5 http://127.0.0.1:18765/jobs.html >/dev/null
+# Verify the real HTTP service and delivery callback before asking the
+# operator to interact. Use a distinct synthetic order to preserve quotas.
+HTTP="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' \
+    -H 'Content-Type: application/json' \
+    -d '{"order_id":"ZJ-PREFLIGHT-TEST","email":"buyer@example.com"}' \
+    http://127.0.0.1:18765/v1/recovery/request)"
+echo "PREFLIGHT_HTTP: $HTTP"
+test "$HTTP" = 202
+for i in $(seq 1 10); do sudo test -s "$WORK/exchange/preflight-link" && break; sleep 1; done
+sudo test -s "$WORK/exchange/preflight-link" || { echo "PREFLIGHT_DELIVERY: FAIL" >&2; exit 1; }
+echo "PREFLIGHT_DELIVERY: PASS"
 echo "BROWSER_SANDBOX_READY: PASS"
 echo "Open http://127.0.0.1:18765/jobs.html in your browser."
 echo "Request recovery: ZJ-RECOVERY-TEST / buyer@example.com"
 read -r -p "After requesting recovery, press Enter here: " _
-for i in $(seq 1 5); do test -s "$WORK/exchange/link" && break; sleep 1; done
-sudo test -s "$WORK/exchange/link"
+for i in $(seq 1 10); do sudo test -s "$WORK/exchange/link" && break; sleep 1; done
+if ! sudo test -s "$WORK/exchange/link"; then
+    echo "BROWSER_REQUEST: FAIL — no link generated; HTTP evidence follows." >&2
+    exit 1
+fi
 echo "RECOVERY_LINK_GENERATED: PASS"
 sudo cat "$WORK/exchange/link"
 echo "Open the link in a new browser tab. Confirm Restore access."
