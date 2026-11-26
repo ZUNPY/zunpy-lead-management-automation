@@ -73,8 +73,8 @@ def issue_recovery(
     db: Session, *, order_id: str, email: str, now: datetime | None = None,
 ) -> RecoveryDelivery | None:
     """Internal service result, not a public response. Never sends mail."""
-    current = ensure_aware_utc(now or utcnow())
     order = _lock_order(db, order_id)
+    current = ensure_aware_utc(now or utcnow())
     if not _eligible(order, current):
         return None
     # Deliver only to the stored address, never to caller-supplied text.
@@ -105,8 +105,8 @@ def redeem_recovery(
     db: Session, *, order_id: str, raw_token: str, now: datetime | None = None,
 ) -> RecoveredAccess | None:
     """Rotate the customer credential once; preserve existing access/upload TTLs."""
-    current = ensure_aware_utc(now or utcnow())
     order = _lock_order(db, order_id)
+    current = ensure_aware_utc(now or utcnow())
     if not _eligible(order, current):
         return None
     row = db.execute(
