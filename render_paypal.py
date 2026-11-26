@@ -6,6 +6,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
@@ -13,11 +14,7 @@ from app.db.session import get_db
 from app.models import Order, OrderStatus
 from app.schemas.order import OrderCreateInternal
 from app.security.tokens import is_expired, issue_order_token
-from app.services.orders import (
-    DuplicatePaymentReferenceError,
-    create_order,
-    transition_order,
-)
+from app.services.orders import add_event
 from app.services.payments import (
     PaymentConfigurationError,
     PaymentProviderError,
@@ -162,43 +159,64 @@ def capture_checkout_order(
     )
 
     order_id = f"ZJ-{uuid4().hex[:16].upper()}"
+    # Validate with the original schema, then persist the final order and
+    # both audit events in ONE transaction. A failure cannot leave PAID
+    # committed without WAITING_UPLOAD. Existing legacy PAID rows stay blocked.
     try:
-        order = create_order(
-            db,
+        data = OrderCreateInternal(
+            customer_email=verified.payer_email,
+            payment_reference=payment_reference,
+            amount_cents=verified.amount_cents,
+            currency=verified.currency,
+            max_documents=JOB001_MAX_DOCUMENTS,
+        )
+        order = Order(
             order_id=order_id,
-            payload=OrderCreateInternal(
-                customer_email=verified.payer_email,
-                payment_reference=payment_reference,
-                amount_cents=verified.amount_cents,
-                currency=verified.currency,
-                max_documents=JOB001_MAX_DOCUMENTS,
-            ),
+            status=OrderStatus.WAITING_UPLOAD,
+            customer_email=str(data.customer_email),
+            payment_provider="paypal",
+            payment_reference=data.payment_reference,
+            amount_cents=data.amount_cents,
+            currency=data.currency.upper(),
+            max_documents=data.max_documents,
             access_token_hash=issued.token_hash,
             access_expires_at=issued.access_expires_at,
             upload_expires_at=issued.upload_expires_at,
         )
-        order = transition_order(
-            db,
-            order_id=order.order_id,
-            new_status=OrderStatus.WAITING_UPLOAD,
-            event_type="PAYPAL_PAYMENT_CAPTURED",
-            detail={
-                "paypal_order_id": verified.order_id,
-                "capture_id": verified.capture_id,
-            },
-        )
-    except DuplicatePaymentReferenceError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="PayPal payment has already been claimed.",
-        ) from exc
+        db.add(order)
+        db.flush()
+        add_event(db, order_id, "PAYMENT_CONFIRMED", {
+            "provider": "paypal", "payment_reference": payment_reference,
+        })
+        add_event(db, order_id, "PAYPAL_PAYMENT_CAPTURED", {
+            "from": OrderStatus.PAID.value,
+            "to": OrderStatus.WAITING_UPLOAD.value,
+            "paypal_order_id": verified.order_id,
+            "capture_id": verified.capture_id,
+        })
+        db.flush()
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        # A concurrent winner is authoritative; never issue its token.
+        existing = db.execute(
+            select(Order.order_id).where(Order.payment_reference == payment_reference)
+        ).scalar_one_or_none()
+        if existing is not None:
+            raise HTTPException(
+                status_code=409, detail="PayPal payment has already been claimed.",
+            ) from None
+        raise HTTPException(status_code=503, detail="Order requires reconciliation.") from None
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="Order requires reconciliation.") from None
 
     return {
         "status": "ok",
         "result": "paypal_payment_verified_order_ready",
-        "order_id": order.order_id,
+        "order_id": order_id,
         "order_token": issued.raw,
-        "order_status": order.status.value,
+        "order_status": OrderStatus.WAITING_UPLOAD.value,
         "paypal_order_id": verified.order_id,
         "capture_id": verified.capture_id,
         "max_documents": order.max_documents,
