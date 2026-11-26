@@ -22,3 +22,13 @@ Date: 2026-11-26. Status: sandbox verified in parts; NOT released.
 - Validate complete candidate build/start, migration, rollback compatibility and end-to-end flow in isolation before approval of any live deployment.
 
 No production migration, merge, customer contact or commercial activation authorized by this checkpoint.
+
+## Integrated sandbox acceptance — 2026-11-26
+
+- Backend candidate: `23288088e79f0315611b74d92f7c86ae2ee69043`.
+- Operator-reported terminal acceptance: **28/28 tests PASS in 3.004 s**; includes actual disposable PostgreSQL, ASGI public recovery routes with explicitly overridden sandbox delivery dependency, temporary Unix socket relay, and live synthetic n8n webhook. No actual PayPal payment or email.
+- Checkout retries no longer rotate existing order credentials or extend deadlines. Three lifecycle tests passed, including pending link preservation and post-redemption retries. Expired and partially provisioned orders require reconciliation rather than automatic reactivation.
+- Website candidate branch `website-job005-recovery`, commit `4f160a6c63d07b35b15e21a08c3928addee828e1`: three simulated browser contract scenarios passed (paid retry, explicit fragment redemption, recovery request). Real browser acceptance remains pending.
+- n8n workflow version `abb0dca6-abfe-465b-8460-5b8699d43d32` accepted synthetic expiring link payload; Gmail remained disabled. Workflow unpublished via MCP after acceptance.
+
+Sandbox integration is verified; **production recovery is not enabled**. No deployment or migration of active services performed. Remaining release gates: full candidate build/start, permanent least-privilege relay, actual proxy identity and input privacy, approved real delivery and failure handling, reconciliation for partial orders, real browser and deployment acceptance. The earlier remaining gate for checkout retry safety is superseded by the successful tests above.
