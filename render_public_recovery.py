@@ -18,9 +18,9 @@ from render_recovery import RecoveryDelivery, issue_recovery, redeem_recovery
 from render_recovery_limits import allow_request
 from render_recovery_routes import IssuePayload, RedeemPayload, private_response
 
-from render_sensitive_http import SensitiveRoute
+from render_sensitive_http import BoundedRecoveryRoute
 
-router = APIRouter(prefix="/recovery", tags=["recovery"], route_class=SensitiveRoute)
+router = APIRouter(prefix="/recovery", tags=["recovery"], route_class=BoundedRecoveryRoute)
 logger = logging.getLogger(__name__)
 
 
