@@ -32,3 +32,7 @@ No production migration, merge, customer contact or commercial activation author
 - n8n workflow version `abb0dca6-abfe-465b-8460-5b8699d43d32` accepted synthetic expiring link payload; Gmail remained disabled. Workflow unpublished via MCP after acceptance.
 
 Sandbox integration is verified; **production recovery is not enabled**. No deployment or migration of active services performed. Remaining release gates: full candidate build/start, permanent least-privilege relay, actual proxy identity and input privacy, approved real delivery and failure handling, reconciliation for partial orders, real browser and deployment acceptance. The earlier remaining gate for checkout retry safety is superseded by the successful tests above.
+
+## Persistent sandbox relay — 2026-11-26
+
+Installer commit `79162961842c5e260942bc6cd68d71fadcae8ee1`. Operator reported PERSISTENT_SANDBOX_RELAY: INSTALLED, PERSISTENT_RELAY_RESTART: PASS, JOB-005.2.20 PERSISTENT_RELAY: PASS. Dedicated non-root nginx container, host-network upstream to loopback n8n, private Unix socket directory, no new TCP listener configured, explicit synthetic webhook route and restart policy. The probe passed from an isolated container with the host user's UID/GID after relay restart. No active API or production configuration changed. Sandbox workflow unpublished via MCP again. Host reboot survival and final active API UID/mount permissions are not yet verified.
