@@ -68,3 +68,7 @@ Created unpublished n8n workflow i9WaautJTLqkCusz, version 3790cec0-aea8-4cfc-8c
 ## Dedicated mail relay — 2026-11-26
 
 Operator reported JOB-005.2.28 MAIL_RELAY_INSTALLED: PASS at 9ec24232fa3d6e2b910f5a68d23264717993d434. Separate container zunpy-recovery-mail-relay, private Unix socket recovery-mail-relay/socket/mail.sock, dedicated locally generated 256-bit header secret recovery-mail-relay/header-secret (0600). Isolation checks passed for sandbox path, wrong method and unpublished mail webhook. Existing sandbox relay unchanged. Production mail workflow remains unpublished; dedicated n8n header credential must be created and assigned, and authenticated delivery tested before activation. No actual mail sent.
+
+## Dedicated authenticated mail channel — 2026-11-26
+
+Operator reported JOB-005.2.30 PRIVATE_MAIL_CHANNEL: PASS. Dedicated Header Auth credential assigned to candidate workflow version 51a1d839-bee3-434b-a232-4dfe4ff77091. Via separate private Unix socket, missing authentication and sandbox credential rejected (401/403); dedicated credential reached the invalid-payload rejection path (HTTP 500 expected for this negative test). Gmail remained disabled throughout; candidate workflow unpublished after test. No real mail sent. Positive provider acknowledgement through the complete adapter/relay/workflow chain still requires controlled acceptance. No public API activation or production migration.
