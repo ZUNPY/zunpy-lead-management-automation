@@ -6,6 +6,8 @@ Run only after taking a backup. No automatic migration during requests.
 """
 from __future__ import annotations
 
+import argparse
+
 from sqlalchemy import DateTime, String, create_engine, inspect, text
 
 from app.core.config import get_settings
@@ -15,7 +17,7 @@ from render_recovery import recovery_tokens
 BASE_REVISION = "0003_order_files"
 
 
-def migrate(engine) -> None:
+def migrate(engine, *, check_only: bool = False) -> None:
     if engine.dialect.name != "postgresql":
         raise RuntimeError("Recovery migration requires PostgreSQL.")
     with engine.begin() as conn:
@@ -34,7 +36,11 @@ def migrate(engine) -> None:
             actual = {c["name"] for c in inspector.get_columns(name)}
             if not {c.name for c in Base.metadata.tables[name].columns}.issubset(actual):
                 raise RuntimeError(f"Incomplete base table: {name}")
-        recovery_tokens.create(conn, checkfirst=True)
+        if check_only:
+            if recovery_tokens.name not in existing:
+                raise RuntimeError("Recovery schema missing; run explicit migration first.")
+        else:
+            recovery_tokens.create(conn, checkfirst=True)
         inspector = inspect(conn)
         columns = {c["name"]: c for c in inspector.get_columns(recovery_tokens.name)}
         if set(columns) != {c.name for c in recovery_tokens.columns}:
@@ -67,9 +73,12 @@ def migrate(engine) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true", help="Validate without creating tables")
+    args = parser.parse_args()
     engine = create_engine(get_settings().database_url, pool_pre_ping=True)
     try:
-        migrate(engine)
+        migrate(engine, check_only=args.check)
     finally:
         engine.dispose()
     print("RECOVERY_SCHEMA: PASS")
