@@ -35,7 +35,12 @@
       invalidLink:"The API returned an unexpected URL. The operation was stopped.",
       reset:"Clear this tab's test session? Existing orders are not cancelled or refunded.",
       saved:"Order status: ",
-      warming:"The API may be waking up. Keep this tab open."
+      warming:"The API may be waking up. Keep this tab open.",
+      recoveryRequired:"This order is already paid. Save the order ID and request recovery below. Do not pay again.",
+      recoveryAccepted:"If the order and email match and recovery is available, a link will be sent.",
+      recoveryUnavailable:"Recovery is unavailable or the link has expired. Try again later or contact support with your order ID.",
+      recoveryInvalid:"Invalid recovery link.",
+      recoveryRestored:"Access restored."
     },
     es: {
       start:"Inicia una compra de prueba con PayPal Sandbox.",
@@ -62,13 +67,19 @@
       invalidLink:"La API ha devuelto una URL inesperada. Se ha detenido la operación.",
       reset:"¿Borrar la sesión de prueba de esta pestaña? No se cancelan ni reembolsan pedidos existentes.",
       saved:"Estado del pedido: ",
-      warming:"La API podría estar iniciándose. Mantén abierta esta pestaña."
+      warming:"La API podría estar iniciándose. Mantén abierta esta pestaña.",
+      recoveryRequired:"Este pedido ya está pagado. Guarda el ID y solicita la recuperación abajo. No vuelvas a pagar.",
+      recoveryAccepted:"Si coinciden el pedido y el correo y la recuperación está disponible, se enviará un enlace.",
+      recoveryUnavailable:"Recuperación no disponible o enlace caducado. Inténtalo más tarde o contacta con soporte indicando el ID de pedido.",
+      recoveryInvalid:"Enlace de recuperación no válido.",
+      recoveryRestored:"Acceso recuperado."
     }
   };
   let lang = "en";
   try { lang = localStorage.getItem("zunpy-lang") === "es" ? "es" : "en"; } catch (_) {}
   let state = {};
   let busy = false;
+  let recoveryLink = null;
   let storageOK = true;
   let downloadURL = "";
   let note = {key:"start", extra:"", kind:""};
@@ -92,6 +103,8 @@
     });
     try { localStorage.setItem("zunpy-lang",lang); } catch (_) {}
     setNote(note.key,note.kind,note.extra);
+    const recoveryMessage = $("recovery-message");
+    if (recoveryMessage.dataset.key) recoveryMessage.textContent = t(recoveryMessage.dataset.key);
     render();
   }
   function load() {
@@ -103,8 +116,8 @@
       if (!state || typeof state !== "object" || Array.isArray(state)) state = {};
     } catch (_) { storageOK=false; state={}; }
   }
-  function save(patch) {
-    const next = {...state,...patch};
+  function save(patch, replaceState=false) {
+    const next = replaceState ? {...patch} : {...state,...patch};
     try { sessionStorage.setItem(STORAGE,JSON.stringify(next)); }
     catch (_) { storageOK=false; throw new Error(t("unsupported")); }
     state = next;
@@ -130,15 +143,19 @@
     const processing = paid && ["READY","PROCESSING"].includes(status);
     const resume = paid && !completed && !review && !processing && Boolean(state.uploadId && (state.uploaded || state.validated));
     const upload = paid && ["WAITING_UPLOAD","UPLOADING"].includes(status) && !resume;
-    visible("pay-panel",!paid && !pending && storageOK);
+    visible("pay-panel",!paid && !pending && !state.orderId && !recoveryLink && storageOK);
     visible("pending-panel",pending);
     visible("file-panel",upload);
     visible("resume-panel",resume);
     visible("status-panel",paid);
     visible("result-panel",completed && Boolean(downloadURL));
-    visible("reset-panel",paid || pending);
-    visible("order",paid);
-    $("order").textContent = paid ? state.orderId + " · " + status : "";
+    visible("reset-panel",Boolean(state.orderId) || pending);
+    visible("order",Boolean(state.orderId));
+    $("order").textContent = state.orderId ? state.orderId + (status ? " · " + status : "") : "";
+    visible("recovery-form",!recoveryLink);
+    visible("redeem-panel",Boolean(recoveryLink));
+    $("redeem-order").textContent = recoveryLink ? recoveryLink.orderId : "";
+    if (!$("recovery-order").value && state.orderId) $("recovery-order").value = state.orderId;
     if (pending) {
       try { $("approval").href = paypalLink(state.approval); }
       catch (_) { $("approval").removeAttribute("href"); }
@@ -150,6 +167,9 @@
     $("stage-result").className=completed?"done":review||processing?"active":"";
     document.querySelectorAll("button:not([data-lang])").forEach(b=>b.disabled=busy);
     $("pdf").disabled=busy;
+    $("recovery-order").disabled=busy;
+    $("recovery-email").disabled=busy;
+    $("redeem-recovery").disabled=busy || !storageOK;
     $("upload").disabled=busy || !$("pdf").files.length;
     document.querySelectorAll("#approval,#download").forEach(a=>a.setAttribute("aria-disabled",String(busy)));
   }
@@ -201,10 +221,75 @@
     const d=await request("/payments/paypal/order/"+encodeURIComponent(state.paypalId)+"/capture",{
       method:"POST",body:{claim_secret:state.claim}
     });
-    if (!d.order_id || !d.order_token || d.paypal_order_id!==state.paypalId) throw new Error("Unexpected capture response");
+    if (!validOrderId(d.order_id) || d.paypal_order_id!==state.paypalId) throw new Error("Unexpected capture response");
+    if (d.result==="paypal_order_recovery_required") {
+      save({orderId:d.order_id,status:d.order_status},true);
+      setNote("recoveryRequired");
+      $("recovery-order").value=d.order_id;
+      return;
+    }
+    if (!validToken(d.order_token)) throw new Error("Unexpected capture response");
     save({orderId:d.order_id,orderToken:d.order_token,status:d.order_status,claim:null,approval:null});
     if (d.order_status==="WAITING_UPLOAD") setNote("paid","ok");
     else await refresh();
+  }
+  function validOrderId(value) {
+    return typeof value==="string" && /^ZJ-[A-Za-z0-9-]{1,29}$/.test(value);
+  }
+  function validToken(value) {
+    return typeof value==="string" && /^[A-Za-z0-9_-]{20,128}$/.test(value);
+  }
+  function recoveryNote(key, kind="") {
+    const el=$("recovery-message");
+    el.dataset.key=key;
+    el.textContent=t(key);
+    el.className="message"+(kind?" "+kind:"");
+    el.hidden=!key;
+  }
+  function readRecoveryLink() {
+    if (!location.hash) return;
+    const fragment=new URLSearchParams(location.hash.slice(1));
+    if (!fragment.has("recovery") && !fragment.has("order")) return;
+    // Remove the secret from the visible URL/history before any network call.
+    history.replaceState(null,"",location.pathname+location.search);
+    const orderId=fragment.get("order"), token=fragment.get("recovery");
+    if (fragment.getAll("order").length!==1 || fragment.getAll("recovery").length!==1 ||
+        !validOrderId(orderId) || !validToken(token)) {
+      recoveryNote("recoveryInvalid","error");
+      return;
+    }
+    recoveryLink={orderId,token};
+  }
+  async function requestRecovery() {
+    const orderId=$("recovery-order").value.trim();
+    const email=$("recovery-email").value.trim();
+    if (!validOrderId(orderId) || !email) return;
+    try {
+      await request("/recovery/request",{method:"POST",body:{order_id:orderId,email}});
+      recoveryNote("recoveryAccepted","ok");
+      $("recovery-email").value="";
+    } catch (_) {
+      recoveryNote("recoveryUnavailable","error");
+    }
+  }
+  async function redeemRecovery() {
+    if (!recoveryLink || !storageOK) return;
+    const link=recoveryLink;
+    try {
+      const d=await request("/recovery/redeem",{method:"POST",body:{
+        order_id:link.orderId,recovery_token:link.token
+      }});
+      if (d.order_id!==link.orderId || !validToken(d.order_token)) throw new Error("Invalid response");
+      save({orderId:d.order_id,orderToken:d.order_token},true);
+      recoveryLink=null; downloadURL=""; $("pdf").value="";
+      $("recovery-email").value=""; $("recovery-order").value=d.order_id;
+      recoveryNote("recoveryRestored","ok");
+    } catch (_) {
+      recoveryLink=null;
+      recoveryNote("recoveryUnavailable","error");
+      return;
+    }
+    await refresh();
   }
   async function result() {
     try {
@@ -220,7 +305,7 @@
     render();
   }
   async function refresh() {
-    if (!state.orderId) return;
+    if (!state.orderId || !state.orderToken) return;
     const d=await request(orderPath()+"/status",{order:true});
     save({status:d.status});
     if(d.status==="COMPLETED") await result();
@@ -279,20 +364,26 @@
   $("upload").addEventListener("click",()=>run(upload));
   $("resume").addEventListener("click",()=>run(complete));
   $("refresh").addEventListener("click",()=>run(refresh));
+  $("recovery-form").addEventListener("submit",e=>{e.preventDefault();run(requestRecovery);});
+  $("redeem-recovery").addEventListener("click",()=>run(redeemRecovery));
+  $("cancel-recovery").addEventListener("click",()=>{if(!busy){recoveryLink=null;recoveryNote("");render();}});
   $("reset").addEventListener("click",()=>{
     if(busy || !confirm(t("reset"))) return;
     try { sessionStorage.removeItem(STORAGE); } catch (_) {return;}
-    state={}; downloadURL=""; $("pdf").value=""; setNote("start"); render();
+    state={}; recoveryLink=null; downloadURL=""; $("pdf").value=""; $("recovery-order").value=""; $("recovery-email").value=""; recoveryNote(""); setNote("start"); render();
   });
   ["approval","download"].forEach(id=>$(id).addEventListener("click",e=>{if(busy || !$(id).hasAttribute("href")) e.preventDefault();}));
   load();
+  readRecoveryLink();
   setLang(lang);
   if (!storageOK) {setNote("unsupported","error");render();return;}
   const params=new URLSearchParams(location.search);
   const returned=params.get("paypal");
   const returnedOrder=params.get("token");
   if(returned) history.replaceState(null,"",location.pathname);
-  if(state.orderId) run(refresh);
+  if(recoveryLink) { render(); return; }
+  if(state.orderId && state.orderToken) run(refresh);
+  else if(state.orderId) setNote("recoveryRequired");
   else if(returned==="approved") {
     if(state.paypalId && returnedOrder===state.paypalId && state.claim) run(capture);
     else setNote("returnMismatch","error");
