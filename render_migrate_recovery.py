@@ -13,6 +13,7 @@ from sqlalchemy import DateTime, String, create_engine, inspect, text
 from app.core.config import get_settings
 from app.db.base import Base
 from render_recovery import recovery_tokens
+from render_recovery_limits import recovery_limits
 
 BASE_REVISION = "0003_order_files"
 
@@ -37,10 +38,11 @@ def migrate(engine, *, check_only: bool = False) -> None:
             if not {c.name for c in Base.metadata.tables[name].columns}.issubset(actual):
                 raise RuntimeError(f"Incomplete base table: {name}")
         if check_only:
-            if recovery_tokens.name not in existing:
+            if not {recovery_tokens.name, recovery_limits.name}.issubset(existing):
                 raise RuntimeError("Recovery schema missing; run explicit migration first.")
         else:
             recovery_tokens.create(conn, checkfirst=True)
+            recovery_limits.create(conn, checkfirst=True)
         inspector = inspect(conn)
         columns = {c["name"]: c for c in inspector.get_columns(recovery_tokens.name)}
         if set(columns) != {c.name for c in recovery_tokens.columns}:
@@ -70,6 +72,20 @@ def migrate(engine, *, check_only: bool = False) -> None:
             and fks[0].get("options", {}).get("ondelete", "").upper() == "CASCADE"
         ):
             raise RuntimeError("Recovery foreign key mismatch.")
+        quota_columns = {c["name"]: c for c in inspector.get_columns(recovery_limits.name)}
+        if set(quota_columns) != {"bucket", "quota_key", "attempts"}:
+            raise RuntimeError("Unexpected quota table columns.")
+        for name in ("bucket", "attempts"):
+            col = quota_columns[name]
+            if col["nullable"] or type(col["type"]).__name__ != "INTEGER":
+                raise RuntimeError("Quota integer column mismatch.")
+        key = quota_columns["quota_key"]
+        if key["nullable"] or not isinstance(key["type"], String) or key["type"].length != 80:
+            raise RuntimeError("Quota key mismatch.")
+        if inspector.get_pk_constraint(recovery_limits.name).get("constrained_columns") != ["bucket", "quota_key"]:
+            raise RuntimeError("Quota primary key mismatch.")
+        if inspector.get_foreign_keys(recovery_limits.name):
+            raise RuntimeError("Unexpected quota foreign key.")
 
 
 def main() -> None:
