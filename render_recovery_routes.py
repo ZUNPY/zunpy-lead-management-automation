@@ -13,10 +13,10 @@ from app.db.session import get_db
 from app.security.auth import require_internal_service
 from render_recovery import issue_recovery, redeem_recovery
 
-from render_sensitive_http import SensitiveRoute
+from render_sensitive_http import BoundedRecoveryRoute
 
 router = APIRouter(
-    route_class=SensitiveRoute,
+    route_class=BoundedRecoveryRoute,
     prefix="/internal/recovery",
     tags=["internal-recovery"],
     dependencies=[Depends(require_internal_service)],
