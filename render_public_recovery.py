@@ -8,6 +8,11 @@ import hashlib
 import hmac
 import ipaddress
 import logging
+import os
+import re
+import stat
+from pathlib import Path
+from functools import partial
 from typing import Callable
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
@@ -19,6 +24,7 @@ from render_recovery_limits import allow_request
 from render_recovery_routes import IssuePayload, RedeemPayload, private_response
 
 from render_sensitive_http import BoundedRecoveryRoute
+from render_recovery_mail import deliver_recovery_mail
 
 router = APIRouter(prefix="/recovery", tags=["recovery"], route_class=BoundedRecoveryRoute)
 logger = logging.getLogger(__name__)
@@ -32,6 +38,46 @@ class PublicRecoveryConfig:
     def __post_init__(self):
         if len(self.source_secret) < 32 or not callable(self.deliver):
             raise ValueError("Recovery requires a strong source secret and delivery adapter.")
+
+
+def _read_private_hex(path: str) -> bytes:
+    """Read one private, regular secret file without following final symlinks."""
+    try:
+        if not Path(path).is_absolute():
+            raise ValueError
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) not in (0o400, 0o600):
+                raise ValueError
+            raw = stream.read(66)
+        if not re.fullmatch(rb"[0-9a-f]{64}\n?", raw):
+            raise ValueError
+        return bytes.fromhex(raw.decode().strip())
+    except (OSError, ValueError, TypeError):
+        raise ValueError("Invalid private recovery configuration.") from None
+
+
+def build_public_recovery_config(*, source_secret_file: str,
+                                 mail_secret_file: str,
+                                 socket_path: str) -> PublicRecoveryConfig:
+    """Explicit assembly for a verified ingress; never enables a route itself.
+
+    Call only from an approved deployment composition after trusted client
+    identity and socket isolation have been verified. No env auto-enable.
+    """
+    source = _read_private_hex(source_secret_file)
+    mail = _read_private_hex(mail_secret_file)
+    try:
+        if (hmac.compare_digest(source, mail)
+                or not Path(socket_path).is_absolute()
+                or not stat.S_ISSOCK(os.lstat(socket_path).st_mode)):
+            raise ValueError
+    except (OSError, ValueError, TypeError):
+        raise ValueError("Invalid private recovery configuration.") from None
+    return PublicRecoveryConfig(source, partial(
+        deliver_recovery_mail, socket_path=socket_path, secret=mail.hex(),
+    ))
 
 
 def get_public_recovery_config() -> PublicRecoveryConfig | None:
