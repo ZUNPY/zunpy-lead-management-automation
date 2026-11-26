@@ -27,7 +27,9 @@ from app.services.payments import (
     verify_webhook_signature,
 )
 
-router = APIRouter(tags=["payments"])
+from render_sensitive_http import SensitiveRoute
+
+router = APIRouter(tags=["payments"], route_class=SensitiveRoute)
 
 JOB001_PRICE_CENTS = 2900
 JOB001_CURRENCY = "EUR"
