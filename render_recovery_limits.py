@@ -30,7 +30,7 @@ recovery_limits = Table(
 
 
 def allow_request(db: Session, *, order_id: str, source_key: str,
-                  now: datetime | None = None) -> bool:
+                  now: datetime | None = None, redeem: bool = False) -> bool:
     """Atomically reserve one request; applies to unknown orders as well."""
     if not re.fullmatch(r"[0-9a-f]{64}", source_key):
         raise ValueError("Expected a server-derived source HMAC.")
@@ -52,6 +52,11 @@ def allow_request(db: Session, *, order_id: str, source_key: str,
         "source:" + source_key: SOURCE_LIMIT,
         "order:" + target: ORDER_LIMIT,
     }
+    if redeem:
+        # Keep redemption independent of issuance; a known order id alone
+        # must not let an attacker exhaust that order\'s redemption quota.
+        quotas = {"redeem:global": GLOBAL_LIMIT,
+                  "redeem:source:" + source_key: SOURCE_LIMIT}
     # Bounded storage: only successful reservations create quota rows.
     db.execute(recovery_limits.delete().where(recovery_limits.c.bucket < bucket))
     counts = dict(db.execute(select(
