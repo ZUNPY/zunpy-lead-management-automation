@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import health, internal, orders, paypal
 from app.core.config import get_settings
 from render_recovery_routes import router as recovery_router
+from render_public_recovery import router as public_recovery_router
 
 settings = get_settings()
 
@@ -27,3 +28,6 @@ app.include_router(orders.router, prefix=settings.api_prefix)
 app.include_router(internal.router, prefix=settings.api_prefix)
 # Internal only; explicit recovery schema migration required before deployment.
 app.include_router(recovery_router, prefix=settings.api_prefix)
+
+# Public recovery returns 503 until an authorized delivery adapter is wired.
+app.include_router(public_recovery_router, prefix=settings.api_prefix)
