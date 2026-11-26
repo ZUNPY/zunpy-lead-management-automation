@@ -38,7 +38,7 @@ def get_public_recovery_config() -> PublicRecoveryConfig | None:
 
 
 def _reserve(db: Session, request: Request, order_id: str,
-             config: PublicRecoveryConfig) -> bool:
+             config: PublicRecoveryConfig, *, redeem: bool = False) -> bool:
     # Never parse forwarding headers here. ASGI client identity must come
     # from a verified proxy configuration; otherwise deployment stays disabled.
     if request.client is None:
@@ -53,7 +53,7 @@ def _reserve(db: Session, request: Request, order_id: str,
     source = str(ipaddress.ip_network(f"{address}/64", strict=False)) if address.version == 6 else str(address)
     key = hmac.new(config.source_secret, source.encode(), hashlib.sha256).hexdigest()
     try:
-        allowed = allow_request(db, order_id=order_id, source_key=key)
+        allowed = allow_request(db, order_id=order_id, source_key=key, redeem=redeem)
         db.commit()  # Rejected or invalid credentials cannot undo quota consumption.
         return allowed
     except Exception:
@@ -99,7 +99,7 @@ def redeem_public(payload: RedeemPayload, request: Request,
     if config is None:
         return private_response({"detail": "Recovery unavailable."}, 503)
     invalid = {"detail": "Recovery unavailable or expired."}
-    if not _reserve(db, request, payload.order_id, config):
+    if not _reserve(db, request, payload.order_id, config, redeem=True):
         return private_response(invalid, 400)
     try:
         result = redeem_recovery(db, order_id=payload.order_id, raw_token=payload.recovery_token)
