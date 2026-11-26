@@ -5,18 +5,17 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
-from app.models import OrderStatus
+from app.models import Order, OrderStatus
 from app.schemas.order import OrderCreateInternal
-from app.security.tokens import issue_order_token
+from app.security.tokens import is_expired, issue_order_token
 from app.services.orders import (
     DuplicatePaymentReferenceError,
-    add_event,
     create_order,
-    get_order_by_payment_reference,
     transition_order,
 )
 from app.services.payments import (
@@ -117,53 +116,48 @@ def capture_checkout_order(
         )
 
     payment_reference = f"PAYPAL:{verified.order_id}"
-    existing = get_order_by_payment_reference(db, payment_reference)
-    issued = issue_order_token(
-        access_ttl_hours=settings.order_access_token_ttl_hours,
-        upload_ttl_hours=settings.order_upload_token_ttl_hours,
-    )
-
+    # A checkout claim proves the PayPal transaction, not perpetual ownership
+    # of an already issued ZUNPY access credential. Never rotate it here.
+    existing = db.execute(
+        select(Order).where(Order.payment_reference == payment_reference)
+        .with_for_update().execution_options(populate_existing=True)
+    ).scalar_one_or_none()
     if existing is not None:
-        if existing.status in {
-            OrderStatus.CANCELLED,
-            OrderStatus.REFUNDED,
-            OrderStatus.FAILED,
-        }:
+        if (
+            existing.payment_provider != "paypal"
+            or existing.amount_cents != verified.amount_cents
+            or existing.currency != verified.currency
+            or existing.customer_email != verified.payer_email
+            or existing.status in {
+                OrderStatus.CANCELLED, OrderStatus.REFUNDED, OrderStatus.FAILED,
+            }
+        ):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Existing ZUNPY order is {existing.status.value}.",
+                detail="Existing order requires review.",
             )
-        if existing.status == OrderStatus.PAID:
-            existing = transition_order(
-                db,
-                order_id=existing.order_id,
-                new_status=OrderStatus.WAITING_UPLOAD,
-                event_type="PAYPAL_CLAIM_RECOVERED",
-                detail={
-                    "paypal_order_id": verified.order_id,
-                    "capture_id": verified.capture_id,
-                },
+        if (
+            existing.status == OrderStatus.PAID
+            or not existing.access_token_hash
+            or is_expired(existing.access_expires_at)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Existing order requires reconciliation or has expired.",
             )
-        existing.access_token_hash = issued.token_hash
-        existing.access_expires_at = issued.access_expires_at
-        existing.upload_expires_at = issued.upload_expires_at
-        add_event(
-            db,
-            existing.order_id,
-            "ORDER_TOKEN_REISSUED",
-            {"reason": "verified_paypal_claim_retry"},
-        )
-        db.commit()
-        db.refresh(existing)
         return {
             "status": "ok",
-            "result": "paypal_order_claim_recovered",
+            "result": "paypal_order_recovery_required",
             "order_id": existing.order_id,
-            "order_token": issued.raw,
             "order_status": existing.status.value,
             "paypal_order_id": verified.order_id,
             "capture_id": verified.capture_id,
         }
+
+    issued = issue_order_token(
+        access_ttl_hours=settings.order_access_token_ttl_hours,
+        upload_ttl_hours=settings.order_upload_token_ttl_hours,
+    )
 
     order_id = f"ZJ-{uuid4().hex[:16].upper()}"
     try:
